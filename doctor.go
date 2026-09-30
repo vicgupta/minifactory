@@ -421,12 +421,6 @@ func checkTimer() checkResult {
 		lines = append(lines, "next fire: overdue by "+shortDur(now.Sub(ti.next)))
 	}
 
-	// the legacy Python timer must stay off
-	if rc, _ := runCmd(10*time.Second, "", nil, "systemctl", "is-enabled", "minifactory.timer"); rc == 0 {
-		status = statusWarn
-		lines = append(lines, "-> legacy minifactory.timer is still enabled — disable it to avoid double-running")
-	}
-
 	// recent service activity from the journal
 	if _, err := exec.LookPath("journalctl"); err == nil {
 		rc, out := runCmd(10*time.Second, "", nil, "journalctl", "-u", "minifactory-go.service",

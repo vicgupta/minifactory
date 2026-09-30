@@ -3,10 +3,9 @@
 A minimal software factory on one VPS: a queue, a single Go binary, and Docker.
 No web server, no UI, no webhook listener — GitHub is the UI.
 
-This is the Go rewrite of the Python `minifactory` in `/root/minifactory/`.
-It lives side by side at `/root/minifactory-go/` with its own queue, worker
-image (`factory-worker-go`), and systemd timer. The Python version's timer is
-still the live one; see "Switching over" below.
+It lives at `/root/minifactory-go/` with its own queue (`data/queue.json`),
+worker image (`factory-worker-go`), and systemd timer (`minifactory-go.timer`,
+firing every minute).
 
 ```
 GitHub issue (label: ready) ──poll──▶ queue (data/queue.json)
@@ -156,19 +155,6 @@ Issues move through five factory labels, and `poll` only picks up
 `GITHUB_TOKEN` needs these scopes on the repo: Contents (read/write, for
 clone/push), Pull requests (write, to open PRs), Issues (read for poll, write
 for status comments and labels).
-
-## Switching over from the Python version
-
-The Go timer is installed **disabled** on purpose — two pollers on the same
-repo/label would double-enqueue issues. When ready:
-
-```bash
-systemctl disable --now minifactory.timer      # stop the Python poller
-systemctl enable --now minifactory-go.timer    # start the Go poller
-```
-
-The Go queue starts empty; the Python queue (`/root/minifactory/data/queue.db`)
-is left alone.
 
 ## Layout
 

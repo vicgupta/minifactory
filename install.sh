@@ -12,8 +12,7 @@
 #                          prompted for, never echoed; file is 0600)
 #   3. build             — go vet, go build, go test
 #   4. worker image      — docker build factory-worker-go
-#   5. systemd           — installs service+timer, enables the Go timer,
-#                          disables the legacy Python timer if present
+#   5. systemd           — installs service+timer, enables the Go timer
 #   6. post-install checks — binary, timer, image, required variables
 #
 # Flags:
@@ -173,10 +172,6 @@ cp "$APP_DIR/minifactory-go.timer" /etc/systemd/system/minifactory-go.timer
 systemctl daemon-reload
 pass "units installed"
 
-if systemctl list-unit-files minifactory.timer >/dev/null 2>&1; then
-    systemctl disable --now minifactory.timer 2>/dev/null || true
-    echo "  legacy Python minifactory.timer disabled"
-fi
 systemctl enable --now minifactory-go.timer
 pass "minifactory-go.timer enabled and started"
 
