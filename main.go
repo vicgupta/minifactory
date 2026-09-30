@@ -26,7 +26,7 @@
 //	list [--json]                         show tasks
 //	logs <id>                             show a task's log
 //	poll                                  enqueue new `ready`-labeled GitHub issues
-//	retry <id>                            re-queue a failed task
+//	retry <id> [--force]                  reclaim a stuck/failed task
 //	doctor [--json]                       detailed health analysis
 //	init [--dir path]                     initialize a factory dir: runtime dirs,
 //	                                      fresh .env (old one backed up), config check
@@ -188,7 +188,7 @@ func usage() {
   list [--json]                         show tasks
   logs <id>                             show a task's log
   poll                                  enqueue new 'ready'-labeled GitHub issues
-  retry <id>                            re-queue a failed task
+  retry <id> [--force]                  reclaim a stuck/failed task
   doctor [--json]                       detailed health analysis of the factory
   init [--dir path] [--force]            initialize a factory dir (dirs, fresh .env
                                         with backup of the old one, config check;

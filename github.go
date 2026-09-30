@@ -320,6 +320,58 @@ func labelIssueRejected(t *Task) {
 	swapIssueLabel(t, labelCreatedPR, labelRejected, color, desc)
 }
 
+// labelIssueReady resets the task's issue to the start of the lifecycle:
+// every factory lifecycle label is removed and factory-ready is added.
+// Used by `retry` when a task is re-queued from scratch (this also clears a
+// stale factory-rejected / factory-inProgress label). Best-effort: failures
+// are logged, never fatal. Silent no-op for manual issues.
+func labelIssueReady(t *Task) {
+	if t.IssueNumber == 0 || githubToken == "" {
+		return
+	}
+	org, repo, ok := parseGithubRepo(t.RepoURL)
+	if !ok {
+		return
+	}
+	color, desc := labelMeta(labelReady)
+	if err := ensureLabel(org, repo, labelReady, color, desc); err != nil {
+		logf(t.ID, "WARNING: ensure %s label failed: %v", labelReady, err)
+		return
+	}
+	raw, err := ghDo("GET", "/repos/"+org+"/"+repo+"/issues/"+strconv.Itoa(t.IssueNumber)+"/labels", nil)
+	if err != nil {
+		logf(t.ID, "WARNING: read issue labels failed: %v", err)
+		return
+	}
+	var cur []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &cur); err != nil {
+		logf(t.ID, "WARNING: parse issue labels failed: %v", err)
+		return
+	}
+	lifecycle := map[string]bool{}
+	for _, l := range factoryLabels {
+		lifecycle[l] = true
+	}
+	seen := map[string]bool{}
+	var labels []string
+	for _, l := range cur {
+		if lifecycle[l.Name] || seen[l.Name] {
+			continue
+		}
+		seen[l.Name] = true
+		labels = append(labels, l.Name)
+	}
+	if !seen[labelReady] {
+		labels = append(labels, labelReady)
+	}
+	if _, err := ghDo("PUT", "/repos/"+org+"/"+repo+"/issues/"+strconv.Itoa(t.IssueNumber)+"/labels",
+		map[string]any{"labels": labels}); err != nil {
+		logf(t.ID, "WARNING: reset issue labels failed: %v", err)
+	}
+}
+
 // commentOnIssue posts a status comment on the task's GitHub issue, if the
 // task came from one. Best-effort: failures are logged, never fatal.
 // Silent no-op for manual issues.

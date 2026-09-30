@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -179,6 +180,11 @@ func cmdRunOnce() int {
 	}
 	tid := t.ID
 	setState(tid, "running", "", "")
+	// Liveness lock: lets `retry` tell a live run from a crashed one. The
+	// deferred release runs on every exit path; a crash (or SIGKILL/reboot)
+	// leaves a stale lock whose PID is dead, which retry treats as reclaimable.
+	claimRun(tid)
+	defer releaseRun(tid)
 	logf(tid, "picked up: %s <%s>", t.Title, t.RepoURL)
 	commentOnIssue(t, "minifactory: picked this up \u2014 working in branch `factory/"+tid+"`.")
 	labelIssueInProgress(t)
@@ -327,41 +333,133 @@ func splitTask(t *Task, sv *sizeVerdict) (int, bool) {
 	return 0, true
 }
 
-// cmdRetry re-queues a failed task. Refuses tasks that are running or
-// awaiting merge, since those have a live branch/PR.
+// runLockPath is the liveness lock for a task being executed by run-once.
+// It lives next to (not inside) the task workdir so the workdir wipe at
+// pickup doesn't remove it.
+func runLockPath(tid string) string { return filepath.Join(workDir, tid+".lock") }
+
+// claimRun records this process as the live executor of tid.
+func claimRun(tid string) {
+	os.MkdirAll(workDir, 0755)
+	os.WriteFile(runLockPath(tid), []byte(strconv.Itoa(os.Getpid())), 0644)
+}
+
+// releaseRun drops the liveness lock for tid.
+func releaseRun(tid string) { os.Remove(runLockPath(tid)) }
+
+// runIsAlive reports whether the process that claimed tid still looks like a
+// live minifactory run. A missing/unparseable lock, a dead PID, or a PID that
+// no longer belongs to a minifactory process all read as "not alive" —
+// exactly what `retry` needs to reclaim a crashed task.
+func runIsAlive(tid string) bool {
+	b, err := os.ReadFile(runLockPath(tid))
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return false
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		return false // no such process (or no permission to signal it)
+	}
+	// Guard against PID reuse: the live holder must be a minifactory process.
+	if cb, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+		return strings.Contains(string(cb), "minifactory")
+	}
+	return true // no /proc (non-Linux): trust kill -0
+}
+
+// cmdRetry reclaims a stuck or failed task:
+//
+//	failed              → re-queue from scratch (issue label reset to factory-ready)
+//	running             → re-queue if the run is dead; a live run is refused
+//	                      unless --force is given
+//	pr_open, no pr_url  → the branch is pushed but PR creation failed: retry
+//	                      only the PR creation, no agent re-run
+//	pr_open with URL    → refuse (merge or close the PR first)
+//	split               → refuse (retry a sub-task instead)
+//	queued / done       → re-queue (explicit user choice)
 func cmdRetry(args []string) int {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "retry requires an id")
 		return 2
 	}
 	id := args[0]
-	found := false
-	err := withStore(func(tasks []Task) ([]Task, error) {
-		for i := range tasks {
-			if tasks[i].ID == id {
-				if tasks[i].State == "running" || tasks[i].State == "pr_open" {
-					return tasks, fmt.Errorf("task %s is %s; not retrying", id, tasks[i].State)
-				}
-				if tasks[i].State == "split" {
-					return tasks, fmt.Errorf("task %s is split into sub-issues %v; retry a sub-task instead", id, tasks[i].Children)
-				}
-				tasks[i].State = "queued"
-				tasks[i].Branch = ""
-				tasks[i].PRURL = ""
-				found = true
-			}
-		}
-		return tasks, nil
-	})
+	force := hasFlag(args, "force")
+
+	tasks, err := listTasks()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if !found {
+	var t *Task
+	for i := range tasks {
+		if tasks[i].ID == id {
+			t = &tasks[i]
+			break
+		}
+	}
+	if t == nil {
 		fmt.Fprintln(os.Stderr, "no such task: "+id)
 		return 1
 	}
+
+	switch t.State {
+	case "split":
+		fmt.Fprintf(os.Stderr, "task %s is split into sub-issues %v; retry a sub-task instead\n", id, t.Children)
+		return 1
+	case "pr_open":
+		if t.PRURL != "" {
+			fmt.Fprintf(os.Stderr, "task %s has an open PR (%s); merge or close it first\n", id, t.PRURL)
+			return 1
+		}
+		if t.Branch == "" {
+			break // nothing salvageable — fall through to a full re-queue
+		}
+		return retryPRCreate(t)
+	case "running":
+		if runIsAlive(id) && !force {
+			fmt.Fprintf(os.Stderr, "task %s looks actively running; pass --force to re-queue anyway\n", id)
+			return 1
+		}
+		releaseRun(id) // drop the stale lock, if any
+	}
+
+	requeueTask(t)
 	fmt.Println("re-queued " + id)
+	return 0
+}
+
+// requeueTask resets a task to queued, clears its branch/PR bookkeeping,
+// and returns its issue to the start of the label lifecycle.
+func requeueTask(t *Task) {
+	withStore(func(tasks []Task) ([]Task, error) {
+		for i := range tasks {
+			if tasks[i].ID == t.ID {
+				tasks[i].State = "queued"
+				tasks[i].Branch = ""
+				tasks[i].PRURL = ""
+			}
+		}
+		return tasks, nil
+	})
+	labelIssueReady(t)
+	commentOnIssue(t, "minifactory: re-queued for another attempt.")
+}
+
+// retryPRCreate re-attempts PR creation for a task whose branch was pushed
+// but whose PR create failed (pr_open with no URL). No agent re-run.
+func retryPRCreate(t *Task) int {
+	prURL := createPR(t, t.Branch)
+	if prURL == "" {
+		fmt.Fprintf(os.Stderr, "retry: PR creation failed again for %s; task left pr_open (see logs/%s.log)\n", t.ID, t.ID)
+		return 1
+	}
+	setState(t.ID, "pr_open", t.Branch, prURL)
+	labelIssueCreatedPR(t)
+	commentOnIssue(t, "minifactory: done — "+prURL+"\nTests passed in an isolated sandbox. Merge the PR to complete.")
+	fmt.Println("PR opened: " + prURL)
 	return 0
 }
 

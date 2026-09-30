@@ -87,7 +87,9 @@ cd /root/minifactory-go
 ./minifactory run-once   # normally the systemd timer does this
 ./minifactory sync
 ./minifactory poll
-./minifactory retry <id> # re-queue a failed task
+./minifactory retry <id> [--force] # reclaim a stuck/failed task: re-queues
+                         # failed or crashed (running) tasks; retries just
+                         # the PR creation for pr_open tasks with no PR URL
 ./minifactory init       # (re)initialize this dir: runtime dirs, queue reset
                          # (existing data/queue.json backed up to
                          # queue.json.bak.<timestamp>), fresh .env
