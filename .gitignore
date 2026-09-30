@@ -1,0 +1,19 @@
+# minifactory runtime state — never commit live config or task data
+.env
+.env.bak.*
+data/
+logs/
+work/
+
+# built binary (built on the deploy host via `go build -o minifactory .`)
+minifactory
+
+# python bytecode (factory-managed repos must never commit these either)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# editor / OS noise
+.DS_Store
+.idea/
+*.swp

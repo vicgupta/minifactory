@@ -1,0 +1,9 @@
+[Unit]
+Description=minifactory cycle (queue -> sandbox -> PR -> sync)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/minifactory-go
+ExecStart=/bin/bash -c '/root/minifactory-go/minifactory run-once && /root/minifactory-go/minifactory sync && /root/minifactory-go/minifactory poll'
