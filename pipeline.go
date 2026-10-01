@@ -109,6 +109,7 @@ func cmdIssue(args []string) int {
 		return 2
 	}
 	repoURL := normalizeRepoURL(repo)
+	tracef("issue: repo=%s title=%q", repoURL, title)
 	// Every `issue` invocation gets a tracking issue on the GitHub repo, which the
 	// factory then labels factory-ready and works through the label
 	// lifecycle. An explicitly linked issue (--issue) is reused instead.
@@ -119,7 +120,10 @@ func cmdIssue(args []string) int {
 			fmt.Fprintln(os.Stderr, "issue: warning: no GITHUB_TOKEN, no GitHub issue created")
 		} else if org, name, ok := parseGithubRepo(repoURL); !ok {
 			fmt.Fprintf(os.Stderr, "issue: warning: %q is not a GitHub repo, no issue created\n", repo)
-		} else if n, err := createIssue(org, name, title, body); err != nil {
+		} else if n, err := func() (int, error) {
+			tracef("issue: creating GitHub issue")
+			return createIssue(org, name, title, body)
+		}(); err != nil {
 			fmt.Fprintf(os.Stderr, "issue: warning: issue creation failed: %v\n", err)
 		} else {
 			issueNum = n
@@ -168,6 +172,7 @@ func cmdRunOnce() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	tracef("run-once: %d task(s) in queue", len(tasks))
 	var t *Task
 	for i := range tasks {
 		if tasks[i].State == "queued" && (t == nil || tasks[i].CreatedAt < t.CreatedAt) {
@@ -179,6 +184,7 @@ func cmdRunOnce() int {
 		return 0
 	}
 	tid := t.ID
+	tracef("run-once: picked %s (%s)", tid, t.Title)
 	setState(tid, "running", "", "")
 	// Liveness lock: lets `retry` tell a live run from a crashed one. The
 	// deferred release runs on every exit path; a crash (or SIGKILL/reboot)
@@ -191,6 +197,7 @@ func cmdRunOnce() int {
 
 	workdir := filepath.Join(workDir, tid)
 	os.RemoveAll(workdir)
+	tracef("run-once: cloning %s", t.RepoURL)
 	if rc, out := runCmd(3*time.Minute, "", nil, "git", gitCloneArgs(t.RepoURL, workdir)...); rc != 0 {
 		return failTask(t, "clone failed\n"+tailStr(out, 2000))
 	}
@@ -203,16 +210,27 @@ func cmdRunOnce() int {
 	// into sub-issues instead of burning the turn budget. splitTask
 	// reports whether it handled the task; otherwise fall through to the
 	// main agent as before.
-	if sv := runSizer(t, workdir); sv != nil {
+	tracef("run-once: sizing pass (fit vs split)")
+	sv, serr := runSizer(t, workdir)
+	if serr != nil {
+		// Auth is dead: the main agent would fail identically, so fail
+		// fast instead of burning another call. Retrying can't help until
+		// the token is fixed.
+		return failTask(t, "sizer: "+serr.Error())
+	}
+	if sv != nil {
 		if rc, done := splitTask(t, sv); done {
 			return rc
 		}
 		logf(tid, "sizer: split not possible — running main agent")
 	}
 
+	tracef("run-once: starting agent")
 	agent := runAgent(t) // logs everything; hard failures surface via result.json
+	tracef("run-once: agent finished")
 
 	// Validate the typed handoff: result.json {changed_files[], tests_passed, summary}.
+	tracef("run-once: validating result.json")
 	var res map[string]any
 	valid := false
 	if b, err := os.ReadFile(filepath.Join(workdir, "result.json")); err == nil {
@@ -234,6 +252,7 @@ func cmdRunOnce() int {
 
 	// Trust boundary for real agents: generated code executes only in a
 	// disposable sandbox, never on the host.
+	tracef("run-once: running tests in sandbox")
 	if agent != "stub" && !runTestsInSandbox(t) {
 		return failTask(t, "sandbox test run failed — no PR opened")
 	}
@@ -251,6 +270,7 @@ func cmdRunOnce() int {
 	logf(tid, "pre-commit hygiene: cleaned bytecode caches, ensured .gitignore")
 
 	branch := "factory/" + tid
+	tracef("run-once: committing and pushing branch %s", branch)
 	if rc, out := runCmd(time.Minute, workdir, nil, "git", "checkout", "-b", branch); rc != 0 {
 		return failTask(t, "checkout -b failed\n"+tailStr(out, 1000))
 	}
@@ -272,6 +292,7 @@ func cmdRunOnce() int {
 	// branch is pushed.
 	labelIssueCompleted(t)
 
+	tracef("run-once: creating PR from %s", branch)
 	prURL := createPR(t, branch)
 	if prURL != "" {
 		commentOnIssue(t, "minifactory: done \u2014 "+prURL+"\nTests passed in an isolated sandbox. Merge the PR to complete.")
@@ -393,6 +414,7 @@ func cmdRetry(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	tracef("retry: %d task(s) in queue, looking for %s", len(tasks), id)
 	var t *Task
 	for i := range tasks {
 		if tasks[i].ID == id {
@@ -405,6 +427,7 @@ func cmdRetry(args []string) int {
 		return 1
 	}
 
+	tracef("retry: task %s state=%s branch=%s pr_url=%s", id, t.State, t.Branch, t.PRURL)
 	switch t.State {
 	case "split":
 		fmt.Fprintf(os.Stderr, "task %s is split into sub-issues %v; retry a sub-task instead\n", id, t.Children)
@@ -417,6 +440,7 @@ func cmdRetry(args []string) int {
 		if t.Branch == "" {
 			break // nothing salvageable — fall through to a full re-queue
 		}
+		tracef("retry: retrying PR creation only for %s (branch %s)", t.ID, t.Branch)
 		return retryPRCreate(t)
 	case "running":
 		if runIsAlive(id) && !force {
@@ -426,6 +450,7 @@ func cmdRetry(args []string) int {
 		releaseRun(id) // drop the stale lock, if any
 	}
 
+	tracef("retry: re-queueing %s", id)
 	requeueTask(t)
 	fmt.Println("re-queued " + id)
 	return 0
@@ -470,6 +495,13 @@ func cmdSync() int {
 		return 1
 	}
 	n := 0
+	opens := 0
+	for i := range tasks {
+		if tasks[i].State == "pr_open" || tasks[i].State == "split" {
+			opens++
+		}
+	}
+	tracef("sync: %d task(s) in queue, %d awaiting PR/merge check", len(tasks), opens)
 	for i := range tasks {
 		t := &tasks[i]
 		// Split parents: when every sub-issue is closed, the parent's work
@@ -515,6 +547,7 @@ func cmdSync() int {
 			continue
 		}
 		n++
+		tracef("sync: checking PR for %s (%s)", t.ID, t.PRURL)
 		if t.PRURL == "" {
 			logf(t.ID, "sync: no pr_url recorded; skipping (merge the branch manually)")
 			continue
@@ -597,6 +630,7 @@ func cmdPoll() int {
 		fmt.Printf("poll: skipping — not set in .env: %s\n", strings.Join(missing, ", "))
 		return 0
 	}
+	tracef("poll: checking %s for open %q issues", githubRepo, labelReady)
 	b, err := ghDo("GET", "/repos/"+githubRepo+"/issues?state=open&labels="+labelReady+"&per_page=50", nil)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "poll:", err)
@@ -607,6 +641,7 @@ func cmdPoll() int {
 		fmt.Fprintln(os.Stderr, "poll:", err)
 		return 1
 	}
+	tracef("poll: GitHub returned %d open issue(s)", len(issues))
 	added := 0
 	withStore(func(tasks []Task) ([]Task, error) {
 		haveNum := map[int]bool{}
@@ -628,6 +663,7 @@ func cmdPoll() int {
 				continue
 			}
 			body, _ := is["body"].(string)
+			tracef("poll: queueing [#%d] %s", int(num), title)
 			tasks = append(tasks, Task{
 				ID:          newID(),
 				RepoURL:     "https://github.com/" + githubRepo + ".git",

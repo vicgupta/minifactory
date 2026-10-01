@@ -38,15 +38,22 @@ minifactory sync → merged = done / closed unmerged = failed
   `claude setup-token` on a machine logged into your Claude Pro/Max plan and
   paste the output here. The `claude` CLI must be installed on the host.
 - `CODEX_TOKEN` — optional. Enables the codex runner (`codex exec` on the
-  host, token passed as `OPENAI_API_KEY`). The `codex` CLI must be installed.
+  host). Must be a real OpenAI API key. codex-cli ignores `OPENAI_API_KEY`
+  on its own, so the factory registers the key once via
+  `codex login --with-api-key` (stored in `~/.codex/auth.json`, mode 600;
+  skipped when the stored key already matches). The `codex` CLI must be
+  installed.
 - `OPENCODE_TOKEN` — optional. Enables the opencode runner (`opencode run`
   on the host, token passed as `OPENCODE_API_KEY`). The `opencode` CLI must
   be installed.
 - `MAX_TURNS` — optional. Turn budget per task for the claude runner
   (default 30). Raise for large tasks; each turn costs model usage.
+- `AGENT` — optional. Force which runner handles tasks:
+  `claude` | `codex` | `opencode` | `stub`. The chosen runner's token must
+  be set (stub needs none); otherwise the factory warns and falls back.
 
-Priority when several agent tokens are set: claude > codex > opencode. With
-none set, the deterministic stub runs — it makes a real code change + test,
+Priority when several agent tokens are set and `AGENT` is unset:
+claude > codex > opencode. With none set, the deterministic stub runs — it makes a real code change + test,
 so the pipeline stays exercisable end to end without any token.
 
 (`GITHUB_REPO=owner/repo` is an optional extra for `minifactory poll`, which
@@ -102,6 +109,17 @@ cd /root/minifactory-go
 ./minifactory version    # print the factory version
 ```
 
+Add `--log` before or after any command to narrate every step on stdout:
+
+```bash
+./minifactory --log run-once   # watch the pipeline: queue pick, clone, sizing,
+                               # agent, tests, push, PR — each step timestamped
+./minifactory poll --log        # watch the GitHub issue scan and queueing
+```
+
+`--log` output is human-readable; don't script against it (`issue` keeps
+printing just the task id as its last line).
+
 ## Versioning
 
 The version lives in `version.go` (semver, starting at 0.0.1). **Bump the
@@ -114,6 +132,12 @@ go build -o minifactory .
 
 `minifactory version` and `minifactory doctor` (including `--json`) report the
 running version, so you can always tell which build is deployed.
+
+`doctor` sanity-checks token shapes (a stub where a real token belongs is a
+warning — this is what a dead credential looks like before it 401s), and
+`doctor --probe` spends one real API call verifying the selected agent's
+token is actually accepted. Without `--probe`, doctor stays fast and free:
+`--version` checks never authenticate.
 
 Watch PRs with `gh pr list` (or the GitHub web UI) and merge there — that merge
 is the human gate. `sync` picks up the merge and marks the task `done`.

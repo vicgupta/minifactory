@@ -56,21 +56,26 @@ var (
 	sizerTimeout   = 8 * time.Minute
 
 	env           map[string]string
+	envFound      bool // .env was found and readable at startup
+	verboseLog    bool // --log: narrate every step on stdout
 	githubToken   string
 	githubRepo    string // optional: owner/repo for `poll` issue intake
 	claudeToken   string
 	codexToken    string
 	opencodeToken string
+	agentChoice   string            // optional AGENT override: claude|codex|opencode|stub
 	maxTurns      = defaultMaxTurns // agent turn budget per task (MAX_TURNS)
 )
 
 // loadEnvFrom parses KEY=VALUE lines from dir/.env, skipping # comments
-// and blanks.
-func loadEnvFrom(dir string) map[string]string {
+// and blanks. The second return value reports whether the file was found
+// and readable — callers that need configuration must fail fast when it
+// isn't, instead of silently running with an empty env.
+func loadEnvFrom(dir string) (map[string]string, bool) {
 	m := map[string]string{}
 	f, err := os.Open(filepath.Join(dir, ".env"))
 	if err != nil {
-		return m
+		return m, false
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -87,17 +92,24 @@ func loadEnvFrom(dir string) map[string]string {
 		v := strings.Trim(strings.TrimSpace(kv[1]), `"'`)
 		m[k] = v
 	}
-	return m
+	return m, true
 }
 
 // loadEnv parses KEY=VALUE lines from the factory's own .env.
-func loadEnv() map[string]string {
+func loadEnv() (map[string]string, bool) {
 	return loadEnvFrom(baseDir)
 }
 
 // runCmd runs a command with a timeout. Secrets must never appear in args.
 // Returns the exit code and combined stdout+stderr.
 func runCmd(timeout time.Duration, dir string, envAdd []string, name string, args ...string) (int, string) {
+	return runCmdWithStdin(timeout, dir, envAdd, "", name, args...)
+}
+
+// runCmdWithStdin is runCmd with bytes fed to the child's stdin (closed
+// afterwards). Use it for secrets like `codex login --with-api-key`, which
+// reads the key from stdin so it never appears in argv/ps output.
+func runCmdWithStdin(timeout time.Duration, dir string, envAdd []string, stdin string, name string, args ...string) (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -106,6 +118,9 @@ func runCmd(timeout time.Duration, dir string, envAdd []string, name string, arg
 	}
 	if envAdd != nil {
 		cmd.Env = append(os.Environ(), envAdd...)
+	}
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
 	}
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -189,14 +204,63 @@ func usage() {
   logs <id>                             show a task's log
   poll                                  enqueue new 'ready'-labeled GitHub issues
   retry <id> [--force]                  reclaim a stuck/failed task
-  doctor [--json]                       detailed health analysis of the factory
+  doctor [--json] [--probe]           detailed health analysis of the factory
+                                      (--probe spends one API call verifying
+                                      the selected agent's token is accepted)
   init [--dir path] [--force]            initialize a factory dir (dirs, fresh .env
                                         with backup of the old one, config check;
                                         refuses live state without --force)
-  version                             print the factory version`)
+  version                             print the factory version
+
+  global flags:
+  --log                               narrate every step on stdout
+                                      (human-readable; don't script against it)`)
+}
+
+// checkEnvFor reports whether cmd may proceed given the .env read result.
+// poll, run-once and sync act on configuration and fail fast when .env is
+// missing or unreadable; everything else is local/diagnostic and stays usable.
+func checkEnvFor(cmd string) error {
+	switch cmd {
+	case "poll", "run-once", "sync":
+		if !envFound {
+			return fmt.Errorf("no .env found at %s; run `minifactory init` to create one",
+				filepath.Join(baseDir, ".env"))
+		}
+	}
+	return nil
+}
+
+// stripLogFlag removes --log / -log from args (wherever it appears) and
+// reports whether it was present, so both `minifactory --log run-once`
+// and `minifactory run-once --log` work without tripping the per-command
+// flag parsing.
+func stripLogFlag(args []string) ([]string, bool) {
+	out := make([]string, 0, len(args))
+	found := false
+	for _, a := range args {
+		if a == "--log" || a == "-log" || a == "—log" {
+			found = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, found
+}
+
+// tracef narrates what the factory is doing, step by step, on stdout —
+// but only when --log was given. Unlike logf it isn't tied to a task, so
+// it covers poll/sync/retry/issue as well as the gaps between task log
+// lines. Human-readable output; don't script against it.
+func tracef(format string, a ...any) {
+	if !verboseLog {
+		return
+	}
+	fmt.Printf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, a...))
 }
 
 func main() {
+	os.Args, verboseLog = stripLogFlag(os.Args)
 	if exe, err := os.Executable(); err == nil {
 		baseDir = filepath.Dir(exe)
 	} else {
@@ -209,18 +273,33 @@ func main() {
 	workDir = filepath.Join(baseDir, "work")
 	logDir = filepath.Join(baseDir, "logs")
 
-	env = loadEnv()
+	env, envFound = loadEnv()
+	if envFound {
+		tracef("config: .env loaded from %s", filepath.Join(baseDir, ".env"))
+	} else {
+		tracef("config: no .env at %s", filepath.Join(baseDir, ".env"))
+	}
 	githubToken = env["GITHUB_TOKEN"]
 	githubRepo = env["GITHUB_REPO"]
 	claudeToken = env["CLAUDE_CODE_OAUTH_TOKEN"]
 	codexToken = env["CODEX_TOKEN"]
 	opencodeToken = env["OPENCODE_TOKEN"]
+	agentChoice = strings.ToLower(strings.TrimSpace(env["AGENT"]))
 	maxTurns = parseMaxTurns(env["MAX_TURNS"])
 
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
+	// Operations that act on configuration fail fast when .env is missing
+	// or unreadable, instead of silently running with an empty env (which
+	// once hid a real outage behind "poll: skipping"). init, doctor, list,
+	// logs, version and retry are local/diagnostic and stay usable.
+	if err := checkEnvFor(os.Args[1]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	tracef("minifactory %s: starting", os.Args[1])
 	var rc int
 	switch os.Args[1] {
 	case "issue":

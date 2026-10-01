@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // defaultMaxTurns is the agent turn budget per task when MAX_TURNS is unset
@@ -29,16 +30,55 @@ func parseMaxTurns(s string) int {
 	return n
 }
 
-// selectAgent picks the agent runner from the configured tokens.
+// agentToken returns the configured token for a named agent runner,
+// or "" when that runner needs none (stub) or has none configured.
+func agentToken(name string) string {
+	switch name {
+	case "claude":
+		return claudeToken
+	case "codex":
+		return codexToken
+	case "opencode":
+		return opencodeToken
+	}
+	return ""
+}
+
+// agentWarned keeps the AGENT misconfiguration warning to one per
+// process — selectAgent is called from several places per run.
+var agentWarned = false
+
+func warnAgentOnce(format string, a ...any) {
+	if agentWarned {
+		return
+	}
+	agentWarned = true
+	fmt.Fprintf(os.Stderr, format, a...)
+}
+
+// selectAgent picks the agent runner.
 //
-// Agent selection is token-driven; MAX_TURNS (default 30) caps the claude
-// runner's turns per task. Priority when several tokens are set:
-// claude > codex > opencode. No token: stub.
+// An explicit AGENT setting (claude|codex|opencode|stub) wins when it names
+// a usable runner — i.e. its token is configured (stub needs none). An
+// unknown AGENT, or one whose token is missing, warns on stderr and falls
+// back to token priority. Without AGENT, selection is token-driven with
+// priority claude > codex > opencode; no token at all means the stub.
 //
 // CLAUDE_CODE_OAUTH_TOKEN is a Claude subscription token: generate it with
 // `claude setup-token` on a machine logged into a Claude Pro/Max plan
 // (no API credits used).
 func selectAgent() string {
+	switch agentChoice {
+	case "claude", "codex", "opencode", "stub":
+		if agentChoice == "stub" || agentToken(agentChoice) != "" {
+			return agentChoice
+		}
+		warnAgentOnce("warning: AGENT=%q has no token configured, falling back to token priority\n", agentChoice)
+	case "":
+		// no override — token priority below
+	default:
+		warnAgentOnce("warning: unknown AGENT=%q (want claude|codex|opencode|stub), falling back to token priority\n", agentChoice)
+	}
 	if claudeToken != "" {
 		return "claude"
 	}
@@ -49,6 +89,81 @@ func selectAgent() string {
 		return "opencode"
 	}
 	return "stub"
+}
+
+// agentSelection describes how selectAgent chooses, for diagnostics:
+// the effective runner and why (explicit AGENT vs token priority).
+func agentSelection() (name, how string) {
+	name = selectAgent()
+	how = "token priority"
+	if agentChoice != "" {
+		if agentChoice == name {
+			how = "AGENT=" + agentChoice + " override"
+		} else {
+			how = "token priority (AGENT=" + agentChoice + " unusable)"
+		}
+	}
+	return name, how
+}
+
+// looksLikeAuthError reports whether CLI output smells like a dead or
+// missing credential rather than a task failure. Used to fail fast
+// (instead of burning the next pipeline stage on the same 401).
+func looksLikeAuthError(out string) bool {
+	l := strings.ToLower(out)
+	for _, sig := range []string{
+		"401",
+		"failed to authenticate",
+		"invalid bearer",
+		"incorrect api key",
+		"invalid api key",
+		"invalid_api_key",
+		"missing bearer",
+		"authentication failed",
+		"unauthorized",
+	} {
+		if strings.Contains(l, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// codexLoginMatches reports whether `codex login status` output shows a
+// login whose key matches token. codex masks the key as e.g.
+// "sk-test-***12345", so only the visible tail is compared.
+func codexLoginMatches(statusOut, token string) bool {
+	if !strings.Contains(statusOut, "Logged in") {
+		return false
+	}
+	if len(token) < 8 {
+		return false
+	}
+	return strings.Contains(statusOut, "***"+token[len(token)-5:])
+}
+
+// ensureCodexLogin makes sure `codex` can authenticate before a run.
+// codex-cli (>=0.159) ignores OPENAI_API_KEY on its own: the key must be
+// registered via `codex login --with-api-key`, which stores it in
+// ~/.codex/auth.json (mode 600). Re-login is skipped when the stored key
+// already matches CODEX_TOKEN. The token travels via stdin, never argv.
+func ensureCodexLogin(id string) bool {
+	if _, err := exec.LookPath("codex"); err != nil {
+		logf(id, "agent codex: `codex` not found on host PATH")
+		return false
+	}
+	if rc, out := runCmd(30*time.Second, "", nil, "codex", "login", "status"); rc == 0 && codexLoginMatches(out, codexToken) {
+		logf(id, "agent codex: already logged in")
+		return true
+	}
+	logf(id, "agent codex: registering CODEX_TOKEN via `codex login --with-api-key`")
+	rc, out := runCmdWithStdin(60*time.Second, "", nil, codexToken, "codex", "login", "--with-api-key")
+	if rc != 0 {
+		logf(id, "agent codex: login failed (exit=%d)\n%s", rc, tailStr(out, 1500))
+		return false
+	}
+	logf(id, "agent codex: login ok")
+	return true
 }
 
 // agentPrompt is the contract handed to a real agent CLI: implement the
@@ -88,6 +203,14 @@ func runCLI(t *Task, workdir, name string) bool {
 		cli, envKV = "claude", "CLAUDE_CODE_OAUTH_TOKEN="+claudeToken
 		args = []string{"-p", prompt, "--output-format", "json", "--max-turns", strconv.Itoa(maxTurns), "--allowed-tools", "Write,Edit,Bash"}
 	case "codex":
+		// codex ignores OPENAI_API_KEY unless the key is registered via
+		// `codex login`; ensureCodexLogin handles that (skipped when the
+		// stored key already matches). The env mapping stays as a fallback
+		// for CLI versions that do honor it.
+		if !ensureCodexLogin(t.ID) {
+			logf(t.ID, "agent codex: not authenticated — check CODEX_TOKEN")
+			return false
+		}
 		cli, envKV = "codex", "OPENAI_API_KEY="+codexToken
 		args = []string{"exec", prompt}
 	case "opencode":
@@ -179,15 +302,17 @@ func parseSizeVerdict(b []byte) *sizeVerdict {
 
 // runSizer runs the sizing pass in workdir and returns the verdict, or nil
 // to proceed with the main agent. Fail-open by design: non-claude agents,
-// a missing CLI, errors, and invalid size.json all mean "fit".
-func runSizer(t *Task, workdir string) *sizeVerdict {
+// a missing CLI, errors, and invalid size.json all mean "fit". The one
+// exception is an authentication failure: retrying the main agent with the
+// same dead token only burns another call, so that aborts the run.
+func runSizer(t *Task, workdir string) (*sizeVerdict, error) {
 	if selectAgent() != "claude" {
 		logf(t.ID, "sizer: skipping (agent is %s, sizing needs claude)", selectAgent())
-		return nil
+		return nil, nil
 	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		logf(t.ID, "sizer: `claude` not found on host PATH, skipping")
-		return nil
+		return nil, nil
 	}
 	fitBudget := maxTurns * 2 / 3
 	prompt := sizePrompt(t, fitBudget)
@@ -197,19 +322,22 @@ func runSizer(t *Task, workdir string) *sizeVerdict {
 	logf(t.ID, "sizer: running `claude` (max-turns=%d, fit budget ~%d)", sizeMaxTurns, fitBudget)
 	rc, out := runCmd(sizerTimeout, workdir, []string{"CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken}, "claude", args...)
 	logf(t.ID, "sizer: exit=%d\n%s", rc, tailStr(out, 1500))
+	if looksLikeAuthError(out) {
+		return nil, fmt.Errorf("agent authentication failed — check CLAUDE_CODE_OAUTH_TOKEN in .env")
+	}
 	b, err := os.ReadFile(filepath.Join(workdir, "size.json"))
 	if err != nil {
 		logf(t.ID, "sizer: no size.json (%v) — treating as fit", err)
-		return nil
+		return nil, nil
 	}
 	sv := parseSizeVerdict(b)
 	if sv == nil {
 		logf(t.ID, "sizer: invalid size.json — treating as fit")
-		return nil
+		return nil, nil
 	}
 	logf(t.ID, "sizer: verdict=%s (%s)", sv.Verdict, sv.Reason)
 	if sv.Verdict != "split" {
-		return nil
+		return nil, nil
 	}
-	return sv
+	return sv, nil
 }

@@ -32,6 +32,11 @@ CODEX_TOKEN=
 # Optional, for the opencode agent.
 OPENCODE_TOKEN=
 
+# Optional. Force which agent runs tasks: claude|codex|opencode|stub.
+# Unset (or a choice whose token is missing) falls back to token priority:
+# claude > codex > opencode > stub. Use stub for dry runs.
+AGENT=
+
 # Optional. Turn budget per task for the claude runner (default 30).
 # Raise for large tasks; each turn costs model usage.
 MAX_TURNS=
@@ -112,7 +117,7 @@ func initFactory(dir string) int {
 	// Capture the pre-existing configuration before it is backed up and
 	// replaced: the label setup below runs against the repo this factory
 	// dir was managing.
-	preCfg := loadEnvFrom(dir)
+	preCfg, _ := loadEnvFrom(dir)
 	if _, err := os.Stat(envPath); err == nil {
 		bak, err := backupFile(envPath, 0600)
 		if err != nil {
@@ -130,13 +135,19 @@ func initFactory(dir string) int {
 	fmt.Println("  wrote fresh .env template (mode 600)")
 
 	// Reread the configuration and report status — values never printed.
-	cfg := loadEnvFrom(dir)
+	cfg, _ := loadEnvFrom(dir)
 	fmt.Println("configuration:")
 	keys := []string{"GITHUB_TOKEN", "GITHUB_REPO", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_TOKEN", "OPENCODE_TOKEN"}
 	for _, k := range keys {
 		fmt.Printf("  %s: %s\n", k, onOff(cfg[k] != ""))
 	}
 	fmt.Printf("  MAX_TURNS: %d\n", parseMaxTurns(cfg["MAX_TURNS"]))
+	agent := strings.ToLower(strings.TrimSpace(cfg["AGENT"]))
+	if agent == "" {
+		fmt.Println("  AGENT: unset (token priority)")
+	} else {
+		fmt.Printf("  AGENT: %s\n", agent)
+	}
 	if cfg["GITHUB_TOKEN"] == "" {
 		fmt.Println("  -> GITHUB_TOKEN is required: set it in .env, then run `minifactory doctor`")
 	} else if cfg["GITHUB_REPO"] == "" {
@@ -185,7 +196,7 @@ func ensureLabels(token, repo string) {
 // Returned strings describe each item at risk; empty means dir is fresh.
 func initWouldClobber(dir string) []string {
 	var atRisk []string
-	cfg := loadEnvFrom(dir)
+	cfg, _ := loadEnvFrom(dir)
 	for _, k := range []string{"GITHUB_TOKEN", "GITHUB_REPO", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_TOKEN", "OPENCODE_TOKEN"} {
 		if cfg[k] != "" {
 			atRisk = append(atRisk, ".env is configured ("+k+" is set)")

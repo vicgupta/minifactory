@@ -37,7 +37,10 @@ func TestInitFreshDir(t *testing.T) {
 		}
 	}
 	// The freshly written template rereads to all-empty values.
-	cfg := loadEnvFrom(target)
+	cfg, found := loadEnvFrom(target)
+	if !found {
+		t.Fatal("loadEnvFrom: expected the fresh .env to be found")
+	}
 	for _, k := range []string{"GITHUB_TOKEN", "GITHUB_REPO", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_TOKEN", "OPENCODE_TOKEN", "MAX_TURNS"} {
 		if v, ok := cfg[k]; !ok || v != "" {
 			t.Errorf("loadEnvFrom(%q) = %q, want empty", k, v)

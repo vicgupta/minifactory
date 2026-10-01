@@ -156,6 +156,8 @@ func checkTokens() checkResult {
 	}()))
 	lines = append(lines, "agent tokens: claude="+onOff(claudeToken != "")+
 		" codex="+onOff(codexToken != "")+" opencode="+onOff(opencodeToken != ""))
+	name, how := agentSelection()
+	lines = append(lines, "agent selected: "+name+" ("+how+")")
 	lines = append(lines, fmt.Sprintf("max turns (claude): %d", maxTurns))
 	if githubToken == "" {
 		status = statusFail
@@ -170,6 +172,21 @@ func checkTokens() checkResult {
 		}
 		lines = append(lines, "-> no agent token: tasks run with the in-sandbox stub agent")
 	}
+	for _, tc := range []struct{ kind, token string }{
+		{"claude", claudeToken},
+		{"codex", codexToken},
+		{"opencode", opencodeToken},
+	} {
+		if tc.token == "" {
+			continue
+		}
+		if ok, hint := tokenShapeOK(tc.kind, tc.token); !ok {
+			if status == statusOK {
+				status = statusWarn
+			}
+			lines = append(lines, "-> "+tc.kind+" token looks wrong: "+hint)
+		}
+	}
 	return checkResult{"tokens", status, strings.Join(lines, "\n      ")}
 }
 
@@ -178,6 +195,29 @@ func onOff(b bool) string {
 		return "set"
 	}
 	return "not set"
+}
+
+// tokenShapeOK is a cheap sanity check that a configured token looks like
+// the real thing — it catches stubs/placeholders (e.g. a 10-char value
+// where a 100+ char `claude setup-token` output belongs), which the API
+// would reject with a 401. It is deliberately loose: a pass is not proof
+// the token is valid, only that it isn't obviously fake.
+func tokenShapeOK(kind, token string) (bool, string) {
+	switch kind {
+	case "claude":
+		if !strings.HasPrefix(token, "sk-ant-oat01-") || len(token) < 40 {
+			return false, "want the `claude setup-token` value (sk-ant-oat01-…, 100+ chars)"
+		}
+	case "codex":
+		if !strings.HasPrefix(token, "sk-") || len(token) < 20 {
+			return false, "want an OpenAI API key (sk-…, 40+ chars)"
+		}
+	case "opencode":
+		if len(token) < 8 {
+			return false, "suspiciously short"
+		}
+	}
+	return true, ""
 }
 
 func checkTools() checkResult {
@@ -223,6 +263,48 @@ func checkAgentCLI() checkResult {
 		ver = "(version check failed)"
 	}
 	return checkResult{"agent (" + agent + ")", statusOK, ver + "\n      " + p}
+}
+
+// probeAgentAuth spends one real API call to verify the selected agent's
+// token is actually accepted. Opt-in via `doctor --probe`: doctor is
+// otherwise fast and free, while a probe costs model usage and can take
+// ~2 minutes. This is the check that would have caught the dead
+// CLAUDE_CODE_OAUTH_TOKEN (doctor's `--version` probe never authenticates).
+func probeAgentAuth() checkResult {
+	agent := selectAgent()
+	name := "agent auth probe (" + agent + ")"
+	if agent == "stub" {
+		return checkResult{name, statusInfo, "stub agent needs no token — nothing to probe"}
+	}
+	if _, err := exec.LookPath(agent); err != nil {
+		return checkResult{name, statusFail, "`" + agent + "` not on host PATH"}
+	}
+	var rc int
+	var out string
+	switch agent {
+	case "claude":
+		rc, out = runCmd(90*time.Second, "", []string{"CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken},
+			"claude", "-p", "Reply with exactly: ok", "--output-format", "json", "--max-turns", "1")
+	case "codex":
+		if !ensureCodexLogin("doctor-probe") {
+			return checkResult{name, statusFail, "codex login failed — check CODEX_TOKEN (see logs/doctor-probe.log)"}
+		}
+		rc, out = runCmd(120*time.Second, "", []string{"OPENAI_API_KEY=" + codexToken},
+			"codex", "exec", "Reply with exactly: ok")
+	case "opencode":
+		rc, out = runCmd(120*time.Second, "", []string{"OPENCODE_API_KEY=" + opencodeToken},
+			"opencode", "run", "Reply with exactly: ok")
+	}
+	status := statusOK
+	detail := "agent token accepted by the API"
+	if looksLikeAuthError(out) {
+		status = statusFail
+		detail = "agent token REJECTED by the API — re-enter it in .env"
+	} else if rc != 0 {
+		status = statusWarn
+		detail = "probe inconclusive (exit=" + strconv.Itoa(rc) + ")"
+	}
+	return checkResult{name, status, detail + "\n      " + tailStr(out, 800)}
 }
 
 func checkGitHub() checkResult {
@@ -569,6 +651,9 @@ func cmdDoctor(args []string) int {
 		checkQueue(),
 		checkDisk(),
 		checkRecentActivity(),
+	}
+	if hasFlag(args, "probe") {
+		checks = append(checks, probeAgentAuth())
 	}
 	if hasFlag(args, "json") {
 		summary := map[checkStatus]int{}
