@@ -717,11 +717,61 @@ type taskListEntry struct {
 	LastCostUSD   *float64 `json:"last_cost_usd,omitempty"`
 }
 
+// validStates are the task states --state may filter on.
+var validStates = []string{"queued", "running", "failed", "pr_open", "split", "done"}
+
+// parseStateFilter parses a --state value: a comma-separated list of state
+// names, with surrounding whitespace ignored. Unknown names are an error.
+func parseStateFilter(s string) ([]string, error) {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		ok := false
+		for _, v := range validStates {
+			if name == v {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("unknown state %q (want one of: %s)", name, strings.Join(validStates, ", "))
+		}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("--state needs at least one state (want one of: %s)", strings.Join(validStates, ", "))
+	}
+	return out, nil
+}
+
 func cmdList(args []string) int {
 	tasks, err := listTasks()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
+	}
+	var states []string
+	if s := flagVal(args, "state"); s != "" {
+		var err error
+		states, err = parseStateFilter(s)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "list:", err)
+			return 2
+		}
+		want := map[string]bool{}
+		for _, st := range states {
+			want[st] = true
+		}
+		filtered := tasks[:0]
+		for _, t := range tasks {
+			if want[t.State] {
+				filtered = append(filtered, t)
+			}
+		}
+		tasks = filtered
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt < tasks[j].CreatedAt })
 	if hasFlag(args, "json") {
