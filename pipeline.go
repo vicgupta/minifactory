@@ -824,17 +824,63 @@ func cmdList(args []string) int {
 	return 0
 }
 
+// tailLines returns the last n lines of s. A trailing newline does not
+// count as an extra line; the result ends with a single trailing newline
+// when it is non-empty (matching how log lines are written).
+func tailLines(s string, n int) string {
+	s = strings.TrimSuffix(s, "\n")
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 func cmdLogs(args []string) int {
-	if len(args) < 1 {
+	tailN := 0
+	if flagPresent(args, "tail") {
+		tailStr := flagVal(args, "tail")
+		// Atoi accepts a leading +, which we reject to keep the meaning
+		// unambiguous (last-N only, never from-line-N).
+		n, err := strconv.Atoi(tailStr)
+		if err != nil || n < 1 || strings.HasPrefix(tailStr, "+") || strings.HasPrefix(tailStr, "-") {
+			fmt.Fprintln(os.Stderr, "logs: --tail must be a positive number")
+			return 2
+		}
+		tailN = n
+	}
+	// The id is the first positional argument, so --tail may come before
+	// or after it. Task ids are hex and never start with -.
+	id := ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--tail" {
+			i++ // skip the flag's space-separated value
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue // --tail=... and any other flags
+		}
+		id = a
+		break
+	}
+	if id == "" {
 		fmt.Fprintln(os.Stderr, "logs requires an id")
 		return 2
 	}
-	b, err := os.ReadFile(filepath.Join(logDir, args[0]+".log"))
+	b, err := os.ReadFile(filepath.Join(logDir, id+".log"))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "no logs for "+args[0])
+		fmt.Fprintln(os.Stderr, "no logs for "+id)
 		return 1
 	}
-	fmt.Print(string(b))
+	if tailN == 0 {
+		fmt.Print(string(b))
+	} else {
+		fmt.Print(tailLines(string(b), tailN))
+	}
 	return 0
 }
 
