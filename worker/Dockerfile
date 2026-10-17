@@ -12,6 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir pytest
 
+# Vendor agent CLIs: real agents (claude/codex/opencode) run inside this
+# sandbox, so the image carries them. Rebuild the image
+# (docker build -t factory-worker-go worker/) to pick up new CLI versions.
+RUN npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
+
 COPY --from=build /stub_agent /opt/stub_agent
 
 WORKDIR /work
