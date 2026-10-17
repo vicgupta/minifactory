@@ -109,6 +109,10 @@ func runCmd(timeout time.Duration, dir string, envAdd []string, name string, arg
 // runCmdWithStdin is runCmd with bytes fed to the child's stdin (closed
 // afterwards). Use it for secrets like `codex login --with-api-key`, which
 // reads the key from stdin so it never appears in argv/ps output.
+//
+// When stdin is empty the child's stdin is an empty reader, never the
+// parent's: an agent CLI that reads stdin (opencode's `run` does) would
+// otherwise block forever when the factory is started from a terminal.
 func runCmdWithStdin(timeout time.Duration, dir string, envAdd []string, stdin string, name string, args ...string) (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -121,6 +125,8 @@ func runCmdWithStdin(timeout time.Duration, dir string, envAdd []string, stdin s
 	}
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
+	} else {
+		cmd.Stdin = strings.NewReader("")
 	}
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
