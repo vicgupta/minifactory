@@ -285,3 +285,149 @@ func TestCmdListStateFilter(t *testing.T) {
 		t.Errorf("unfiltered list wrong:\n%s", out)
 	}
 }
+
+// withStdin swaps os.Stdin for a pipe feeding input, returning a restore func.
+func withStdin(t *testing.T, input string) func() {
+	t.Helper()
+	old := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteString(input); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	os.Stdin = r
+	return func() {
+		os.Stdin = old
+		r.Close()
+	}
+}
+
+func TestFlagPresent(t *testing.T) {
+	args := []string{"--repo", "x", "--body=", "--body-file", "f"}
+	if !flagPresent(args, "repo") || !flagPresent(args, "body") || !flagPresent(args, "body-file") {
+		t.Errorf("flagPresent missed a present flag: %v", args)
+	}
+	if flagPresent(args, "title") || flagPresent(args, "bod") {
+		t.Errorf("flagPresent false positive: %v", args)
+	}
+	// --body must not collide with --body-file (or vice versa).
+	if !flagPresent(args, "body-file") || flagPresent([]string{"--body-file", "x"}, "body") {
+		t.Error("flagPresent prefix collision")
+	}
+}
+
+func TestCmdIssueBodyFile(t *testing.T) {
+	// setupIssue isolates the queue and neuters GitHub calls. Each subtest
+	// gets a fresh, empty queue.
+	setupIssue := func(t *testing.T) {
+		t.Helper()
+		restore := testDirs(t)
+		oldToken := githubToken
+		githubToken = ""
+		t.Cleanup(func() {
+			githubToken = oldToken
+			restore()
+		})
+	}
+	issueArgs := func(extra ...string) []string {
+		return append([]string{"--repo", "https://github.com/x/y.git", "--title", "T1"}, extra...)
+	}
+	queueBody := func(t *testing.T) (int, string) {
+		t.Helper()
+		tasks, err := listTasks()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 1 {
+			t.Fatalf("queue has %d tasks, want 1", len(tasks))
+		}
+		return len(tasks), tasks[0].Body
+	}
+	writeBodyFile := func(t *testing.T, name, content string) string {
+		t.Helper()
+		f := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(f, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	t.Run("file", func(t *testing.T) {
+		setupIssue(t)
+		want := "# Spec\n\nUse `backticks` and $vars untouched.\n"
+		f := writeBodyFile(t, "task.md", want)
+		var rc int
+		out := captureStdout(t, func() { rc = cmdIssue(issueArgs("--body-file", f)) })
+		if rc != 0 {
+			t.Fatalf("rc = %d", rc)
+		}
+		if id := strings.TrimSpace(out); id == "" || strings.Contains(id, "\n") {
+			t.Errorf("stdout should carry only the task id, got %q", out)
+		}
+		if _, got := queueBody(t); got != want {
+			t.Errorf("body mismatch: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("equals form", func(t *testing.T) {
+		setupIssue(t)
+		want := "equals-form body"
+		f := writeBodyFile(t, "spec.txt", want)
+		var rc int
+		captureStdout(t, func() { rc = cmdIssue(issueArgs("--body-file=" + f)) })
+		if rc != 0 {
+			t.Fatalf("rc = %d", rc)
+		}
+		if _, got := queueBody(t); got != want {
+			t.Errorf("body mismatch: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("stdin", func(t *testing.T) {
+		setupIssue(t)
+		want := "heredoc body with `ticks` and $dollar\n"
+		restoreStdin := withStdin(t, want)
+		defer restoreStdin()
+		var rc int
+		captureStdout(t, func() { rc = cmdIssue(issueArgs("--body-file", "-")) })
+		if rc != 0 {
+			t.Fatalf("rc = %d", rc)
+		}
+		if _, got := queueBody(t); got != want {
+			t.Errorf("body mismatch: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("both flags", func(t *testing.T) {
+		setupIssue(t)
+		f := writeBodyFile(t, "task.md", "x")
+		if rc := cmdIssue(issueArgs("--body", "inline", "--body-file", f)); rc != 2 {
+			t.Errorf("both flags: rc = %d, want 2", rc)
+		}
+		tasks, err := listTasks()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 0 {
+			t.Errorf("both flags: %d task(s) queued, want 0", len(tasks))
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		setupIssue(t)
+		f := filepath.Join(t.TempDir(), "nope.md")
+		if rc := cmdIssue(issueArgs("--body-file", f)); rc != 2 {
+			t.Errorf("missing file: rc = %d, want 2", rc)
+		}
+		tasks, err := listTasks()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 0 {
+			t.Errorf("missing file: %d task(s) queued, want 0", len(tasks))
+		}
+	})
+}
