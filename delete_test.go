@@ -74,3 +74,24 @@ func TestDeletePlanEmpty(t *testing.T) {
 		t.Errorf("fresh temp dir should plan nothing: %+v", p)
 	}
 }
+
+func TestFindUnitsCatchesBothSpellings(t *testing.T) {
+	dir := t.TempDir()
+	// Vic's live install spells it "minfactory" (no i).
+	os.WriteFile(filepath.Join(dir, "minfactory.service"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(dir, "minfactory.timer"), []byte("x"), 0o644)
+	found := findUnits(dir, deleteUnitNames)
+	if len(found) != 1 || found[0] != "minfactory" {
+		t.Errorf("findUnits = %v, want [minfactory]", found)
+	}
+	// The standard spelling is caught too.
+	os.WriteFile(filepath.Join(dir, "minifactory.service"), []byte("x"), 0o644)
+	found = findUnits(dir, deleteUnitNames)
+	if len(found) != 2 {
+		t.Errorf("findUnits = %v, want both spellings", found)
+	}
+	// A name with neither file is not reported.
+	if got := findUnits(dir, []string{"nosuch"}); len(got) != 0 {
+		t.Errorf("findUnits(nosuch) = %v, want []", got)
+	}
+}
