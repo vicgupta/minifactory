@@ -32,17 +32,65 @@ minifactory sync → merged = done / closed unmerged = failed
 
 ## Install
 
-No Go toolchain needed. Grab the tarball for your platform from the
-[releases page](https://github.com/vicgupta/minifactory/releases) —
-`linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` — and unpack
-the `minifactory` binary onto your PATH:
+**One line** (the primary install path — copy-paste):
 
 ```bash
-tar -xzf minifactory-0.0.21-linux-amd64.tar.gz
-cp minifactory ~/.local/bin/   # or /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/vicgupta/minifactory/main/install.sh | sh
 ```
 
-Verify the download against `sha256sums.txt` from the same release.
+`install.sh` lives at the repository root on the default branch (`main`),
+so that raw URL is the real installer. Run via `sh` (POSIX, dash-safe),
+it:
+
+- detects your OS/arch (`Linux`/`Darwin` × `amd64`/`arm64`; anything else
+  fails with a clear message) and resolves the **latest** release tag via
+  the GitHub API — no version is hardcoded, so it keeps working for
+  future releases (assets are `minifactory-<version>-<os>-<arch>.tar.gz`);
+- downloads that tarball plus `sha256sums.txt` and **verifies the SHA256,
+  failing closed** on a missing entry, a missing checksum file, or any
+  mismatch — an unverified binary is never installed;
+- installs the binary to **`~/.local/bin/minifactory`** (creating the
+  directory; never `/usr/local/bin`, never sudo for placement; an explicit
+  `BIN_DIR` environment override wins). If `~/.local/bin` is not already
+  on your PATH it appends a marked, idempotent block
+  (`# minifactory` + `export PATH="$HOME/.local/bin:$PATH"`) to
+  `~/.profile` and to `~/.bashrc` (or `~/.zshrc` under zsh) — running the
+  installer twice adds it once. It also exports PATH for its own session
+  and verifies the result; open a new shell (or `source ~/.profile`) so
+  your current shell sees `minifactory` too;
+- then **auto-invokes `minifactory init`** by its absolute
+  `~/.local/bin/minifactory` path (so PATH timing doesn't matter), in
+  your real cwd/HOME. `init` itself never prompts for values — it writes
+  an empty `.env` template — but on Linux its git/Docker install
+  (below) may prompt for sudo: the installer hands init the terminal via
+  `/dev/tty` when one exists (the curl pipe occupies stdin). With no
+  terminal at all it runs `init --skip-deps` instead of hanging on a sudo
+  prompt, and says so. Opt out with `MINIFACTORY_SKIP_INIT=1` prefixed to
+  the one-liner, or pass `--no-init` via
+  `curl -fsSL .../install.sh | sh -s -- --no-init`; skip just the
+  git/Docker install with `MINIFACTORY_SKIP_DEPS=1`. A stale copy at the
+  old `/usr/local/bin/minifactory` location is detected and warned about
+  with the exact removal command — two competing copies are never left
+  silently.
+
+Manual alternative (no pipe): grab the tarball for your platform from the
+[releases page](https://github.com/vicgupta/minifactory/releases) —
+`linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` — verify it
+against `sha256sums.txt` from the same release, then:
+
+```bash
+tar -xzf minifactory-<version>-linux-amd64.tar.gz
+mkdir -p ~/.local/bin
+cp minifactory ~/.local/bin/
+# if ~/.local/bin is not on your PATH yet:
+printf '\n# minifactory\nexport PATH="$HOME/.local/bin:$PATH"\n' >> ~/.profile
+minifactory init
+```
+
+From a source checkout, `./install.sh --user` builds into `~/.local/bin`
+instead of downloading. The binary directory is overridable (`BIN_DIR`),
+the factory state directory is not the binary directory (see
+Configuration).
 
 ## Requirements
 
@@ -63,9 +111,11 @@ Verify the download against `sha256sums.txt` from the same release.
   [Docker Desktop](https://www.docker.com/products/docker-desktop), start
   Docker Desktop, then run `minifactory doctor` to verify.
 
-The binary may live in a protected directory (`/usr/local/bin`): no state
-is written beside it. Configuration and runtime state resolve as described
-under Configuration below — by default in `~/.minifactory/`.
+The binary lives in `~/.local/bin` by default: no state is written
+beside it (and older copies that ended up in a protected directory such
+as `/usr/local/bin` still work — state never anchored to the binary's
+directory). Configuration and runtime state resolve as described under
+Configuration below — by default in `~/.minifactory/`.
 
 ## Update
 
@@ -77,7 +127,26 @@ minifactory update --check  # just report whether an update exists
 `update` downloads the tarball for the current platform, verifies its
 SHA256 against the release's `sha256sums.txt`, smoke-tests the new binary,
 then atomically swaps it in — keeping the previous binary as
-`minifactory.bak` and rolling back automatically if anything fails.
+`minifactory.bak` and rolling back automatically if anything fails. It
+replaces the **running binary in place** (by default
+`~/.local/bin/minifactory`): it never relocates to `/usr/local/bin` and
+never uses sudo — if the running binary's directory is not writable by
+you, it refuses and prints the exact manual download/verify/copy steps.
+Re-running the install one-liner above also upgrades in place (and
+re-runs `init`, subject to the same opt-outs).
+
+## Uninstall
+
+```bash
+rm ~/.local/bin/minifactory
+# remove the marked `# minifactory` PATH block (two lines) from
+# ~/.profile and ~/.bashrc (or ~/.zshrc), then open a new shell
+minifactory delete-all   # before removing the binary: factory state,
+                         # units and the crontab entry (prints a plan)
+```
+
+State (`~/.minifactory/` or `./.env`, see Configuration) is separate from
+the binary — deleting `~/.local/bin/minifactory` alone leaves it intact.
 
 ## Configuration
 
@@ -192,6 +261,7 @@ point it at a writable dir, and let `install-cron` manage a per-user
 crontab entry:
 
 ```bash
+mkdir -p ~/.local/bin
 cp minifactory ~/.local/bin/
 minifactory init --dir ~/.minifactory
 minifactory install-cron --dir ~/.minifactory

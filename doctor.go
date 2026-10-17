@@ -563,6 +563,33 @@ func checkTimer() checkResult {
 	return checkResult{"timer", status, strings.Join(lines, "\n      ")}
 }
 
+// checkBinaryLocation reports where the running binary lives, whether that
+// is the user-local default (~/.local/bin), and whether it resolves on PATH.
+// It only warns — a custom location is legitimate when explicit.
+func checkBinaryLocation() checkResult {
+	exe, err := os.Executable()
+	if err != nil {
+		return checkResult{"binary", statusInfo, "cannot locate running binary: " + err.Error()}
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	home, _ := os.UserHomeDir()
+	st, detail := assessBinaryLocation(exe, home, os.Getenv("PATH"))
+	if w := legacyBinaryWarning(exe, fileExists(legacyBinaryPath)); w != "" {
+		if st == statusOK {
+			st = statusWarn
+		}
+		detail += "\n      " + w
+	}
+	if p, err := exec.LookPath("minifactory"); err == nil {
+		detail += "\n      on PATH as: " + p
+	} else {
+		detail += "\n      not found on PATH (`command -v minifactory` fails in this shell)"
+	}
+	return checkResult{"binary", st, detail}
+}
+
 func checkDirs() checkResult {
 	var lines []string
 	status := statusOK
@@ -682,6 +709,7 @@ func checkRecentActivity() checkResult {
 
 func cmdDoctor(args []string) int {
 	checks := []checkResult{
+		checkBinaryLocation(),
 		checkEnvFile(),
 		checkTokens(),
 		checkTools(),

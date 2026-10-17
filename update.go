@@ -305,11 +305,22 @@ func cmdUpdate(args []string) int {
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
+	// Self-update replaces the running binary in place — which, by
+	// default, is ~/.local/bin/minifactory. It never relocates to
+	// /usr/local/bin or any protected dir and never uses sudo: when the
+	// running binary's directory is not writable by this user, say so
+	// and print the manual steps instead of failing mid-swap.
+	if !dirWritable(filepath.Dir(exe)) {
+		fmt.Fprintf(os.Stderr, "update: cannot write to %s (running binary %s) — refusing to relocate or use sudo\n%s\n", filepath.Dir(exe), exe, manualInstallSteps(exe, wantAsset))
+		return 1
+	}
+	if w := legacyBinaryWarning(exe, fileExists(legacyBinaryPath)); w != "" {
+		fmt.Fprintln(os.Stderr, "update:", w)
+	}
 	stageDir, err := os.MkdirTemp(filepath.Dir(exe), "minifactory-update-*")
 	if err != nil {
-		// Fall back to the system temp dir; the rename below may fail
-		// across filesystems, in which case the old binary is kept.
-		stageDir, err = os.MkdirTemp("", "minifactory-update-*")
+		fmt.Fprintf(os.Stderr, "update: cannot stage the new binary next to %s: %v\n%s\n", exe, err, manualInstallSteps(exe, wantAsset))
+		return 1
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "update:", err)

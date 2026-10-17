@@ -7,4 +7,4 @@ Requires=docker.service
 Type=oneshot
 WorkingDirectory=/root/minifactory-go
 Environment=MINIFACTORY_DIR=/root/minifactory-go
-ExecStart=/bin/bash -c '/root/minifactory-go/minifactory run-once && /root/minifactory-go/minifactory sync && /root/minifactory-go/minifactory poll'
+ExecStart=/bin/bash -c '/root/.local/bin/minifactory run-once && /root/.local/bin/minifactory sync && /root/.local/bin/minifactory poll'
