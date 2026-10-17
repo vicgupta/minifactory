@@ -38,7 +38,10 @@ func TestWorkerImageStaleLogic(t *testing.T) {
 	if workerImageVersionStale(workerImageVersion) {
 		t.Error("current version should not be stale")
 	}
-	for _, v := range []string{"", "0", "999"} {
+	if workerImageVersion != "2" {
+		t.Errorf("workerImageVersion = %q, want %q (label/constant must be bumped together)", workerImageVersion, "2")
+	}
+	for _, v := range []string{"", "0", "1", "999"} {
 		if !workerImageVersionStale(v) {
 			t.Errorf("version %q should be stale", v)
 		}
@@ -77,11 +80,35 @@ func TestEmbeddedDockerfileNode24AndLabel(t *testing.T) {
 	for _, want := range []string{
 		"https://deb.nodesource.com/setup_24.x",
 		`LABEL ` + workerImageLabel + `="` + workerImageVersion + `"`,
+		`LABEL minifactory.worker-version="2"`,
 		"@anthropic-ai/claude-code",
+		// Exactly the two packages npm flagged as having postinstall
+		// scripts, scoped to the one global install (npm's own suggestion).
+		"npm install -g --allow-scripts=@anthropic-ai/claude-code,opencode-ai @anthropic-ai/claude-code @openai/codex opencode-ai",
+		// Build-time smoke check in the final stage: broken CLIs fail loudly.
+		"RUN claude --version && codex --version && opencode --version",
 	} {
 		if !strings.Contains(d, want) {
 			t.Errorf("embedded Dockerfile missing %q", want)
 		}
+	}
+	for _, banned := range []string{
+		"dangerously-allow-all-scripts",
+		"--allow-scripts=all",
+		"@openai/codex,opencode-ai", // codex has no install script; do not allow it
+	} {
+		if strings.Contains(d, banned) {
+			t.Errorf("embedded Dockerfile contains overly broad allow-scripts %q", banned)
+		}
+	}
+	// Smoke check must come after the global install, in the final stage.
+	installIdx := strings.Index(d, "npm install -g")
+	smokeIdx := strings.Index(d, "RUN claude --version")
+	if installIdx < 0 || smokeIdx < 0 || smokeIdx < installIdx {
+		t.Errorf("smoke check must follow the npm install (install=%d smoke=%d)", installIdx, smokeIdx)
+	}
+	if idx := strings.LastIndex(d, "FROM "); idx < 0 || smokeIdx < idx {
+		t.Errorf("smoke check must be in the final stage")
 	}
 	if strings.Contains(d, "setup_20") || strings.Contains(d, "setup_22") {
 		t.Error("Dockerfile still references old NodeSource line")
@@ -124,6 +151,21 @@ func TestWorkerImageOldLabelRebuilds(t *testing.T) {
 	}
 	if !strings.Contains(fmt.Sprint(f.installs), "docker build") {
 		t.Errorf("old-label image was not rebuilt: %v", f.installs)
+	}
+}
+
+// Label "1" is the Node-24-but-blocked-postinstall image already on
+// Vic's VPS: it must be treated stale and rebuilt automatically.
+func TestWorkerImageLabel1Rebuilds(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.daemon = true
+	f.imageVersion = "1"
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[2].State != depBuilt || !strings.Contains(got[2].Detail, "rebuilt stale") {
+		t.Fatalf("worker image = %+v, want rebuilt stale for label 1", got[2])
+	}
+	if !strings.Contains(fmt.Sprint(f.installs), "docker build") {
+		t.Errorf("label-1 image was not rebuilt: %v", f.installs)
 	}
 }
 

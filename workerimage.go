@@ -41,7 +41,7 @@ var workerContextFS embed.FS
 // silently keeping e.g. an image with too-old Node. Old images built
 // before labelling have no label (""), which never matches.
 const workerImageLabel = "minifactory.worker-version"
-const workerImageVersion = "1"
+const workerImageVersion = "2"
 
 // workerImageVersionStale reports whether an image carrying version v
 // should be rebuilt by this binary.
