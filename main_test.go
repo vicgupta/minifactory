@@ -144,7 +144,7 @@ func TestRunCmdEmptyStdinGetsEOF(t *testing.T) {
 	// Regression: an empty stdin string must give the child immediate EOF,
 	// not the parent's stdin. `cat` copies stdin to stdout and exits; if it
 	// inherited an open stdin it would block until the timeout.
-	rc, out := runCmd(10*time.Second, "", nil, "", "", "cat")
+	rc, out := runCmd(10*time.Second, "", nil, "", "cat")
 	if rc != 0 {
 		t.Errorf("cat with empty stdin: exit=%d, want 0 (output %q)", rc, out)
 	}
@@ -154,7 +154,7 @@ func TestRunCmdEmptyStdinGetsEOF(t *testing.T) {
 }
 
 func TestRunCmdStdinStillDelivered(t *testing.T) {
-	rc, out := runCmd(10*time.Second, "", nil, "hello\n", "", "cat")
+	rc, out := runCmd(10*time.Second, "", nil, "hello\n", "cat")
 	if rc != 0 || out != "hello\n" {
 		t.Errorf("cat with stdin: exit=%d output=%q, want 0 %q", rc, out, "hello\n")
 	}
