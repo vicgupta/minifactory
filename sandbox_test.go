@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -108,4 +109,113 @@ func TestHasTestSuiteNegativeConfigs(t *testing.T) {
 			t.Error("hasTestSuite() = false, want true")
 		}
 	})
+}
+
+func TestAgentTokenEnv(t *testing.T) {
+	cases := map[string]string{
+		"claude":   "CLAUDE_CODE_OAUTH_TOKEN",
+		"codex":    "OPENAI_API_KEY",
+		"opencode": "OPENCODE_API_KEY",
+		"stub":     "",
+		"bogus":    "",
+	}
+	for name, want := range cases {
+		if got := agentTokenEnv(name); got != want {
+			t.Errorf("agentTokenEnv(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestWriteAgentStaging(t *testing.T) {
+	dir, err := writeAgentStaging("t1", "OPENCODE_API_KEY=sekret-token", "do the thing\nmultiline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("staging dir perm = %v, err = %v; want 0700", fi.Mode(), err)
+	}
+	envB, err := os.ReadFile(filepath.Join(dir, "token.env"))
+	if err != nil || string(envB) != "OPENCODE_API_KEY=sekret-token\n" {
+		t.Errorf("token.env = %q, err = %v", envB, err)
+	}
+	if fi, _ := os.Stat(filepath.Join(dir, "token.env")); fi.Mode().Perm() != 0o600 {
+		t.Errorf("token.env perm = %o, want 0600", fi.Mode().Perm())
+	}
+	promptB, err := os.ReadFile(filepath.Join(dir, "prompt.txt"))
+	if err != nil || string(promptB) != "do the thing\nmultiline" {
+		t.Errorf("prompt.txt = %q, err = %v", promptB, err)
+	}
+	// The staging dir lives outside any repo checkout.
+	if dir == "" {
+		t.Error("empty staging dir")
+	}
+}
+
+func TestSandboxDockerBase(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://proxy:8080")
+	workdir := mkwork(t, "a.txt")
+	staging, err := writeAgentStaging("t1", "OPENCODE_API_KEY=sekret-token", "do the thing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(staging)
+	args := sandboxDockerBase(workdir, staging)
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"run", "--rm",
+		"--cpus", "2", "--memory", "4g", "--pids-limit", "256",
+		"--env-file", filepath.Join(staging, "token.env"),
+		workdir + ":/work",
+		filepath.Join(staging, "prompt.txt") + ":/prompt:ro",
+		"-w", "/work", workerImage,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("docker args missing %q in %q", want, joined)
+		}
+	}
+	// Proxy passes through when set on the host.
+	if !strings.Contains(joined, "-e HTTP_PROXY") {
+		t.Errorf("expected proxy passthrough in %q", joined)
+	}
+	// Secrets and task text must never appear in the argv.
+	for _, leak := range []string{"sekret-token", "do the thing", "OPENCODE_API_KEY="} {
+		if strings.Contains(joined, leak) {
+			t.Errorf("docker args leak %q: %q", leak, joined)
+		}
+	}
+}
+
+func TestSandboxInnerCommand(t *testing.T) {
+	prompt := "PROMPT-SENTINEL-do the thing"
+	inner := sandboxInnerCommand("claude", 30)
+	for _, want := range []string{`claude -p`, `"$(cat /prompt)"`, "--max-turns 30", "--dangerously-skip-permissions", "--output-format json"} {
+		if !strings.Contains(inner, want) {
+			t.Errorf("claude inner missing %q: %q", want, inner)
+		}
+	}
+	inner = sandboxInnerCommand("codex", 30)
+	for _, want := range []string{"codex login --with-api-key", "codex exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", `"$(cat /prompt)"`} {
+		if !strings.Contains(inner, want) {
+			t.Errorf("codex inner missing %q: %q", want, inner)
+		}
+	}
+	if strings.Contains(inner, "OPENAI_API_KEY=") {
+		t.Errorf("codex inner must not carry the token value: %q", inner)
+	}
+	inner = sandboxInnerCommand("opencode", 30)
+	for _, want := range []string{"opencode run --auto", `"$(cat /prompt)"`} {
+		if !strings.Contains(inner, want) {
+			t.Errorf("opencode inner missing %q: %q", want, inner)
+		}
+	}
+	// The prompt text itself travels via /prompt, never in the command.
+	for _, name := range []string{"claude", "codex", "opencode"} {
+		if strings.Contains(sandboxInnerCommand(name, 30), prompt) {
+			t.Errorf("%s inner leaks prompt text", name)
+		}
+	}
+	if got := sandboxInnerCommand("bogus", 30); got != "" {
+		t.Errorf("unknown agent inner = %q, want empty", got)
+	}
 }
