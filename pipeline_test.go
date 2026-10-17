@@ -431,3 +431,117 @@ func TestCmdIssueBodyFile(t *testing.T) {
 		}
 	})
 }
+
+func TestTailLines(t *testing.T) {
+	cases := []struct {
+		name string
+		s    string
+		n    int
+		want string
+	}{
+		{"empty", "", 5, ""},
+		{"only newline", "\n", 5, ""},
+		{"fewer lines than n", "a\nb\n", 5, "a\nb\n"},
+		{"exactly n lines", "a\nb\nc\n", 3, "a\nb\nc\n"},
+		{"more lines than n", "a\nb\nc\nd\n", 2, "c\nd\n"},
+		{"trailing newline not a line", "a\nb\n", 1, "b\n"},
+		{"no trailing newline", "a\nb", 1, "b\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := tailLines(c.s, c.n); got != c.want {
+				t.Errorf("tailLines(%q, %d) = %q, want %q", c.s, c.n, got, c.want)
+			}
+		})
+	}
+}
+
+func TestCmdLogsTail(t *testing.T) {
+	setupLogs := func(t *testing.T, id, content string) {
+		t.Helper()
+		restore := testDirs(t)
+		t.Cleanup(restore)
+		if err := os.MkdirAll(logDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(logDir, id+".log"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("no flag prints whole log", func(t *testing.T) {
+		setupLogs(t, "a1", "one\ntwo\nthree\n")
+		var rc int
+		out := captureStdout(t, func() { rc = cmdLogs([]string{"a1"}) })
+		if rc != 0 || out != "one\ntwo\nthree\n" {
+			t.Errorf("rc = %d, out = %q", rc, out)
+		}
+	})
+
+	t.Run("short log prints whole log unchanged", func(t *testing.T) {
+		setupLogs(t, "b2", "one\ntwo\n")
+		var rc int
+		out := captureStdout(t, func() { rc = cmdLogs([]string{"b2", "--tail", "40"}) })
+		if rc != 0 || out != "one\ntwo\n" {
+			t.Errorf("rc = %d, out = %q", rc, out)
+		}
+	})
+
+	t.Run("long log prints last n lines", func(t *testing.T) {
+		setupLogs(t, "c3", "one\ntwo\nthree\nfour\nfive\n")
+		var rc int
+		out := captureStdout(t, func() { rc = cmdLogs([]string{"c3", "--tail", "2"}) })
+		if rc != 0 || out != "four\nfive\n" {
+			t.Errorf("rc = %d, out = %q", rc, out)
+		}
+	})
+
+	t.Run("flag before id and equals form", func(t *testing.T) {
+		setupLogs(t, "d4", "one\ntwo\nthree\n")
+		var rc int
+		out := captureStdout(t, func() { rc = cmdLogs([]string{"--tail=2", "d4"}) })
+		if rc != 0 || out != "two\nthree\n" {
+			t.Errorf("rc = %d, out = %q", rc, out)
+		}
+	})
+
+	t.Run("invalid tail values", func(t *testing.T) {
+		setupLogs(t, "e5", "one\ntwo\nthree\n")
+		for _, args := range [][]string{
+			{"e5", "--tail", "abc"},
+			{"e5", "--tail", "0"},
+			{"e5", "--tail", "-3"},
+			{"e5", "--tail", "+2"},
+			{"e5", "--tail"},
+		} {
+			var rc int
+			out := captureStdout(t, func() { rc = cmdLogs(args) })
+			if rc != 2 {
+				t.Errorf("args %v: rc = %d, want 2", args, rc)
+			}
+			if out != "" {
+				t.Errorf("args %v: printed %q, want nothing", args, out)
+			}
+		}
+	})
+
+	t.Run("missing id", func(t *testing.T) {
+		setupLogs(t, "f6", "x\n")
+		if rc := cmdLogs([]string{}); rc != 2 {
+			t.Errorf("rc = %d, want 2", rc)
+		}
+		if rc := cmdLogs([]string{"--tail", "5"}); rc != 2 {
+			t.Errorf("flag-only: rc = %d, want 2", rc)
+		}
+	})
+
+	t.Run("missing log", func(t *testing.T) {
+		setupLogs(t, "g7", "x\n")
+		if rc := cmdLogs([]string{"nope"}); rc != 1 {
+			t.Errorf("rc = %d, want 1", rc)
+		}
+		if rc := cmdLogs([]string{"nope", "--tail", "5"}); rc != 1 {
+			t.Errorf("with tail: rc = %d, want 1", rc)
+		}
+	})
+}
