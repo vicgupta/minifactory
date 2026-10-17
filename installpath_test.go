@@ -47,20 +47,20 @@ func TestPathContainsDir(t *testing.T) {
 }
 
 func TestEnsurePathBlockIdempotent(t *testing.T) {
-	once, added := ensurePathBlock("export EDITOR=vim\n")
+	once, added := ensurePathBlock("export EDITOR=vim\n", profileMarker, pathExportLine)
 	if !added {
 		t.Fatal("first run should add the block")
 	}
 	if strings.Count(once, profileMarker) != 1 || strings.Count(once, pathExportLine) != 1 {
 		t.Fatalf("want exactly one marked block:\n%s", once)
 	}
-	twice, added2 := ensurePathBlock(once)
+	twice, added2 := ensurePathBlock(once, profileMarker, pathExportLine)
 	if added2 || twice != once {
 		t.Errorf("second run must be a no-op (added=%v):\n%s", added2, twice)
 	}
 	// A profile that already exports the line by hand is left alone.
 	pre := "export PATH=\"$HOME/.local/bin:$PATH\"\n"
-	if out, added := ensurePathBlock(pre); added || out != pre {
+	if out, added := ensurePathBlock(pre, profileMarker, pathExportLine); added || out != pre {
 		t.Errorf("pre-existing export must be a no-op, added=%v out=%q", added, out)
 	}
 }

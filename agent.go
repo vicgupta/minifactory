@@ -396,7 +396,7 @@ func runSizerSandboxed(t *Task, workdir string) (*sizeVerdict, *AgentUsage, erro
 	inner := fmt.Sprintf(`claude -p "$(cat /prompt)" --output-format json --max-turns %d --allowed-tools Read,Write,Bash`, sizeMaxTurns)
 	args := append(sandboxDockerBase(workdir, staging), "bash", "-c", inner)
 	logf(t.ID, "sizer: sandboxed `claude` (max-turns=%d, fit budget ~%d)", sizeMaxTurns, fitBudget)
-	rc, out := runCmd(sizerTimeout, "", nil, "docker", args...)
+	rc, out := runCmd(sizerTimeout, "", nil, "", "docker", args...)
 	logf(t.ID, "sizer: exit=%d\n%s", rc, tailStr(out, 1500))
 	if looksLikeAuthError(out) {
 		return nil, nil, fmt.Errorf("agent authentication failed — check CLAUDE_CODE_OAUTH_TOKEN in .env")

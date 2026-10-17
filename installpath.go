@@ -76,11 +76,11 @@ func pathContainsDir(pathEnv, dir string) bool {
 	return false
 }
 
-// ensurePathBlock returns content with the marked minifactory PATH block
-// appended, unless the block (or the export line itself) is already there.
-// Running it twice adds exactly one block.
-func ensurePathBlock(content string) (string, bool) {
-	if strings.Contains(content, profileMarker) || strings.Contains(content, pathExportLine) {
+// ensurePathBlock appends the marked minifactory PATH block to content,
+// unless the block (or the export line itself) is already there. Running it
+// twice adds exactly one block.
+func ensurePathBlock(content, marker, line string) (string, bool) {
+	if strings.Contains(content, marker) || strings.Contains(content, line) {
 		return content, false
 	}
 	var b strings.Builder
@@ -91,8 +91,13 @@ func ensurePathBlock(content string) (string, bool) {
 	if content != "" {
 		b.WriteString("\n")
 	}
-	b.WriteString(profileMarker + "\n" + pathExportLine + "\n")
+	b.WriteString(marker + "\n" + line + "\n")
 	return b.String(), true
+}
+
+// ensurePathBlockForLine is ensurePathBlock for an explicit export line.
+func ensurePathBlockForLine(content, line string) (string, bool) {
+	return ensurePathBlock(content, profileMarker, line)
 }
 
 // pathExportLineForDir is the export line for binDir: the canonical
@@ -103,31 +108,6 @@ func pathExportLineForDir(binDir, home string) string {
 		return pathExportLine
 	}
 	return fmt.Sprintf(`export PATH="%s:$PATH"`, binDir)
-}
-
-// ensurePathBlockForLine is ensurePathBlock for an explicit export line.
-func ensurePathBlockForLine(content, line string) (string, bool) {
-	if line != pathExportLine && strings.Contains(content, line) {
-		if strings.Contains(content, profileMarker) || strings.Contains(content, line) {
-			return content, false
-		}
-	}
-	if line == pathExportLine {
-		return ensurePathBlock(content)
-	}
-	if strings.Contains(content, profileMarker) || strings.Contains(content, line) {
-		return content, false
-	}
-	var b strings.Builder
-	b.WriteString(content)
-	if content != "" && !strings.HasSuffix(content, "\n") {
-		b.WriteString("\n")
-	}
-	if content != "" {
-		b.WriteString("\n")
-	}
-	b.WriteString(profileMarker + "\n" + line + "\n")
-	return b.String(), true
 }
 
 // profileHasPathBlock reports whether any profile for home/shell already

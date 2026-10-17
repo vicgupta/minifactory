@@ -47,7 +47,7 @@ func runAgent(t *Task, rec *RunRecord) agentRun {
 	if agent == "stub" {
 		args := append(dockerBase(workdir), "/opt/stub_agent")
 		logf(t.ID, "sandbox: docker %s", strings.Join(args, " "))
-		rc, out := runCmd(sandboxTimeout, "", nil, "docker", args...)
+		rc, out := runCmd(sandboxTimeout, "", nil, "", "docker", args...)
 		logf(t.ID, "sandbox: exit=%d\n%s", rc, tailStr(out, 3000))
 		rec.endStage(rc == 0)
 		return agentRun{name: agent, usage: zeroUsage(), sandboxed: true}
@@ -99,7 +99,7 @@ func agentSandboxOK() bool {
 	}
 	ok := false
 	if _, err := exec.LookPath("docker"); err == nil {
-		rc, _ := runCmd(15*time.Second, "", nil, "docker", "image", "inspect", workerImage)
+		rc, _ := runCmd(15*time.Second, "", nil, "", "docker", "image", "inspect", workerImage)
 		ok = rc == 0
 	}
 	sandboxOKCached = &ok
@@ -184,7 +184,7 @@ func runAgentSandboxed(t *Task, workdir, name string) (string, bool, bool) {
 	defer os.RemoveAll(staging)
 	args := append(sandboxDockerBase(workdir, staging), "bash", "-c", sandboxInnerCommand(name, maxTurns))
 	logf(t.ID, "agent %s: sandboxed run in %s (workdir-only mount, token-only env)", name, workerImage)
-	rc, out := runCmd(agentTimeout, "", nil, "docker", args...)
+	rc, out := runCmd(agentTimeout, "", nil, "", "docker", args...)
 	logf(t.ID, "agent %s: exit=%d\n%s", name, rc, tailStr(out, 3000))
 	return out, rc == 0, false
 }
@@ -292,7 +292,7 @@ func runTestsInSandbox(t *Task) bool {
 	testCmd := detectTestCmd(workdir)
 	args := append(dockerBase(workdir), "bash", "-c", testCmd)
 	logf(t.ID, "sandbox tests: docker %s", strings.Join(args, " "))
-	rc, out := runCmd(sandboxTimeout, "", nil, "docker", args...)
+	rc, out := runCmd(sandboxTimeout, "", nil, "", "docker", args...)
 	logf(t.ID, "sandbox tests: exit=%d\n%s", rc, tailStr(out, 3000))
 	return rc == 0
 }

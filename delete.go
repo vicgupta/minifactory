@@ -101,7 +101,7 @@ func readUserCrontab(u string) (string, error) {
 	if u != "" {
 		args = []string{"-u", u, "-l"}
 	}
-	rc, out := runCmd(10*time.Second, "", nil, "crontab", args...)
+	rc, out := runCmd(10*time.Second, "", nil, "", "crontab", args...)
 	if rc != 0 {
 		if strings.Contains(strings.ToLower(out), "no crontab") {
 			return "", nil
@@ -117,7 +117,7 @@ func writeUserCrontab(u, content string) error {
 	if u != "" {
 		args = []string{"-u", u, "-"}
 	}
-	if rc, out := runCmdWithStdin(10*time.Second, "", nil, content, "crontab", args...); rc != 0 {
+	if rc, out := runCmd(10*time.Second, "", nil, content, "crontab", args...); rc != 0 {
 		return fmt.Errorf("crontab install failed: %s", strings.TrimSpace(out))
 	}
 	return nil
@@ -247,7 +247,7 @@ func cmdDeleteAll(args []string) int {
 	// 1. systemd units
 	for _, n := range p.units {
 		if p.isRoot {
-			runCmd(30*time.Second, "", nil, "systemctl", "disable", "--now", n+".timer")
+			runCmd(30*time.Second, "", nil, "", "systemctl", "disable", "--now", n+".timer")
 			os.Remove("/etc/systemd/system/" + n + ".service")
 			os.Remove("/etc/systemd/system/" + n + ".timer")
 			fmt.Println("delete-all: removed systemd units for", n)
@@ -256,7 +256,7 @@ func cmdDeleteAll(args []string) int {
 		}
 	}
 	if p.isRoot && len(p.units) > 0 {
-		runCmd(30*time.Second, "", nil, "systemctl", "daemon-reload")
+		runCmd(30*time.Second, "", nil, "", "systemctl", "daemon-reload")
 	}
 
 	// 2. crontab block
@@ -283,8 +283,8 @@ func cmdDeleteAll(args []string) int {
 	// 3. service user
 	if p.svcUser != "" && !p.keepUser {
 		if p.isRoot {
-			runCmd(10*time.Second, "", nil, "pkill", "-u", p.svcUser)
-			if rc, out := runCmd(30*time.Second, "", nil, "userdel", "-r", p.svcUser); rc != 0 {
+			runCmd(10*time.Second, "", nil, "", "pkill", "-u", p.svcUser)
+			if rc, out := runCmd(30*time.Second, "", nil, "", "userdel", "-r", p.svcUser); rc != 0 {
 				fmt.Fprintf(os.Stderr, "delete-all: userdel -r %s failed: %s\n", p.svcUser, strings.TrimSpace(out))
 			} else {
 				fmt.Println("delete-all: deleted user", p.svcUser)

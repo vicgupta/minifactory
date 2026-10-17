@@ -101,7 +101,7 @@ func removeCronBlock(current string) (string, bool) {
 // readCrontab returns the user's current crontab, or "" when they have
 // none. A missing crontab is not an error.
 func readCrontab() (string, error) {
-	rc, out := runCmd(10*time.Second, "", nil, "crontab", "-l")
+	rc, out := runCmd(10*time.Second, "", nil, "", "crontab", "-l")
 	if rc != 0 {
 		if strings.Contains(strings.ToLower(out), "no crontab") {
 			return "", nil
@@ -113,7 +113,7 @@ func readCrontab() (string, error) {
 
 // writeCrontab replaces the user's crontab with content.
 func writeCrontab(content string) error {
-	if rc, out := runCmdWithStdin(10*time.Second, "", nil, content, "crontab", "-"); rc != 0 {
+	if rc, out := runCmd(10*time.Second, "", nil, content, "crontab", "-"); rc != 0 {
 		return fmt.Errorf("crontab install failed: %s", strings.TrimSpace(out))
 	}
 	return nil

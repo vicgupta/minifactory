@@ -221,7 +221,7 @@ func extractTarGz(src, destDir string) ([]string, error) {
 // smokeTest runs `candidate version` and requires its output to mention
 // the expected version.
 func smokeTest(candidate, wantVer string) error {
-	rc, out := runCmd(15*time.Second, "", nil, candidate, "version")
+	rc, out := runCmd(15*time.Second, "", nil, "", candidate, "version")
 	if rc != 0 {
 		return fmt.Errorf("new binary failed to run (exit %d): %s", rc, strings.TrimSpace(out))
 	}
@@ -320,10 +320,6 @@ func cmdUpdate(args []string) int {
 	stageDir, err := os.MkdirTemp(filepath.Dir(exe), "minifactory-update-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "update: cannot stage the new binary next to %s: %v\n%s\n", exe, err, manualInstallSteps(exe, wantAsset))
-		return 1
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "update:", err)
 		return 1
 	}
 	defer os.RemoveAll(stageDir)

@@ -169,27 +169,19 @@ func loadEnv() (map[string]string, bool) {
 	return loadEnvPath(resolvedEnvPath())
 }
 
-// runCmd runs a command with a timeout. Secrets must never appear in args.
-// Returns the exit code and combined stdout+stderr.
-func runCmd(timeout time.Duration, dir string, envAdd []string, name string, args ...string) (int, string) {
-	return runCmdWithStdin(timeout, dir, envAdd, "", name, args...)
-}
-
-// runCmdWithStdin is runCmd with bytes fed to the child's stdin (closed
-// afterwards). Use it for secrets like `codex login --with-api-key`, which
-// reads the key from stdin so it never appears in argv/ps output.
-//
-// When stdin is empty the child's stdin is an empty reader, never the
-// parent's: an agent CLI that reads stdin (opencode's `run` does) would
-// otherwise block forever when the factory is started from a terminal.
-func runCmdWithStdin(timeout time.Duration, dir string, envAdd []string, stdin string, name string, args ...string) (int, string) {
+// runCmd runs a command with a timeout and the parent's environment plus
+// extras. stdin is fed to the child (empty string → immediate EOF, never the
+// parent's stdin): an agent CLI that reads stdin would otherwise block
+// forever when the factory is started from a terminal. Secrets must never
+// appear in args. Returns the exit code and combined stdout+stderr.
+func runCmd(timeout time.Duration, dir string, envAdd []string, stdin string, name string, args ...string) (int, string) {
 	return runCmdFull(timeout, dir, append(os.Environ(), envAdd...), stdin, name, args...)
 }
 
-// runAgentCmd is runCmdWithStdin for agent subprocesses: the child gets a
-// scrubbed environment (agentEnv) instead of the parent's full env, because
-// the agent executes untrusted task text and must not see the
-// orchestrator's secrets (GITHUB_TOKEN, other agents' tokens, ...).
+// runAgentCmd is runCmd for agent subprocesses: the child gets a scrubbed
+// environment (agentEnv) instead of the parent's full env, because the agent
+// executes untrusted task text and must not see the orchestrator's secrets
+// (GITHUB_TOKEN, other agents' tokens, ...).
 func runAgentCmd(timeout time.Duration, dir string, envAdd []string, stdin string, name string, args ...string) (int, string) {
 	return runCmdFull(timeout, dir, agentEnv(envAdd), stdin, name, args...)
 }
@@ -350,7 +342,7 @@ func stripLogFlag(args []string) ([]string, bool) {
 	out := make([]string, 0, len(args))
 	found := false
 	for _, a := range args {
-		if a == "--log" || a == "-log" || a == "—log" {
+		if a == "--log" || a == "-log" {
 			found = true
 			continue
 		}

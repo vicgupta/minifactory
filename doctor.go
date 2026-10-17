@@ -227,7 +227,7 @@ func checkTools() checkResult {
 		status = statusFail
 		lines = append(lines, "git: NOT FOUND on PATH")
 	} else {
-		rc, out := runCmd(10*time.Second, "", nil, "git", "--version")
+		rc, out := runCmd(10*time.Second, "", nil, "", "git", "--version")
 		ver := "?"
 		if rc == 0 {
 			ver = strings.TrimSpace(firstLine(out, 60))
@@ -257,7 +257,7 @@ func checkAgentCLI() checkResult {
 		return checkResult{"agent (" + agent + ")", statusFail,
 			"token is set but `" + agent + "` is not on the host PATH — install the CLI or clear the token"}
 	}
-	rc, out := runCmd(10*time.Second, "", nil, agent, "--version")
+	rc, out := runCmd(10*time.Second, "", nil, "", agent, "--version")
 	ver := strings.TrimSpace(firstLine(out, 80))
 	if rc != 0 || ver == "" {
 		ver = "(version check failed)"
@@ -283,16 +283,16 @@ func probeAgentAuth() checkResult {
 	var out string
 	switch agent {
 	case "claude":
-		rc, out = runCmd(90*time.Second, "", []string{"CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken},
+		rc, out = runCmd(90*time.Second, "", []string{"CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken}, "",
 			"claude", "-p", "Reply with exactly: ok", "--output-format", "json", "--max-turns", "1")
 	case "codex":
 		if !ensureCodexLogin("doctor-probe") {
 			return checkResult{name, statusFail, "codex login failed — check CODEX_TOKEN (see logs/doctor-probe.log)"}
 		}
-		rc, out = runCmd(120*time.Second, "", []string{"OPENAI_API_KEY=" + codexToken},
+		rc, out = runCmd(120*time.Second, "", []string{"OPENAI_API_KEY=" + codexToken}, "",
 			"codex", "exec", "Reply with exactly: ok")
 	case "opencode":
-		rc, out = runCmd(120*time.Second, "", []string{"OPENCODE_API_KEY=" + opencodeToken},
+		rc, out = runCmd(120*time.Second, "", []string{"OPENCODE_API_KEY=" + opencodeToken}, "",
 			"opencode", "run", "Reply with exactly: ok")
 	}
 	status := statusOK
@@ -393,12 +393,12 @@ func checkDocker() checkResult {
 		return checkResult{"docker", statusFail, "docker CLI not on PATH"}
 	}
 	var lines []string
-	rc, out := runCmd(15*time.Second, "", nil, "docker", "version", "--format", "{{.Server.Version}}")
+	rc, out := runCmd(15*time.Second, "", nil, "", "docker", "version", "--format", "{{.Server.Version}}")
 	if rc != 0 {
 		return dockerDaemonFailure(out, currentUsername())
 	}
 	lines = append(lines, "daemon: reachable, server version "+strings.TrimSpace(out))
-	rc, out = runCmd(15*time.Second, "", nil, "docker", "image", "inspect", workerImage,
+	rc, out = runCmd(15*time.Second, "", nil, "", "docker", "image", "inspect", workerImage,
 		"--format", "{{.Created}} {{.Size}}")
 	if rc != 0 {
 		return checkResult{"docker", statusFail,
@@ -417,7 +417,7 @@ func checkDocker() checkResult {
 	lines = append(lines, "worker image \""+workerImage+"\": present (created "+created+", "+size+")")
 	// Staleness: images built by an older minifactory carry an old (or no)
 	// minifactory.worker-version label. Report it like a missing image.
-	rc, out = runCmd(15*time.Second, "", nil, "docker", "image", "inspect", workerImage,
+	rc, out = runCmd(15*time.Second, "", nil, "", "docker", "image", "inspect", workerImage,
 		"--format", "{{json .Config.Labels}}")
 	imgVersion := ""
 	if rc == 0 {
@@ -434,7 +434,7 @@ func checkDocker() checkResult {
 	// would silently fall back to weaker host execution.
 	agent := selectAgent()
 	if agent != "stub" {
-		rc, out = runCmd(30*time.Second, "", nil, "docker", "run", "--rm", workerImage,
+		rc, out = runCmd(30*time.Second, "", nil, "", "docker", "run", "--rm", workerImage,
 			"sh", "-c", `for c in claude codex opencode; do command -v "$c" >/dev/null 2>&1 && echo "$c:yes" || echo "$c:no"; done`)
 		if rc != 0 {
 			return checkResult{"docker", statusFail,
@@ -527,7 +527,7 @@ func checkTimer() checkResult {
 	for _, name := range timerUnitNames {
 		// Note: `systemctl show` exits 0 even for a missing unit, so
 		// a candidate only counts when it actually loaded.
-		if rc, out := runCmd(10*time.Second, "", nil, "systemctl", "show", name); rc == 0 &&
+		if rc, out := runCmd(10*time.Second, "", nil, "", "systemctl", "show", name); rc == 0 &&
 			showVal(out, "LoadState") != "not-found" {
 			timerName, showOut = name, out
 			break
@@ -543,7 +543,7 @@ func checkTimer() checkResult {
 		fileState: showVal(showOut, "UnitFileState"),
 		last:      parseSystemdTime(showVal(showOut, "LastTriggerUSec")),
 	}
-	if rc, lout := runCmd(10*time.Second, "", nil, "systemctl", "list-timers",
+	if rc, lout := runCmd(10*time.Second, "", nil, "", "systemctl", "list-timers",
 		timerName, "--no-pager", "--no-legend"); rc == 0 {
 		ti.next = parseListTimersNext(lout)
 	}
@@ -576,7 +576,7 @@ func checkTimer() checkResult {
 
 	// recent service activity from the journal
 	if _, err := exec.LookPath("journalctl"); err == nil {
-		rc, out := runCmd(10*time.Second, "", nil, "journalctl", "-u", svcName,
+		rc, out := runCmd(10*time.Second, "", nil, "", "journalctl", "-u", svcName,
 			"--since", "15 min ago", "-q", "--no-pager", "-o", "cat", "-n", "6")
 		if rc == 0 {
 			if tail := strings.TrimSpace(out); tail != "" {

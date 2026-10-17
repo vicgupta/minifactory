@@ -107,7 +107,7 @@ func gitChangedFiles(workdir string) (map[string]bool, error) {
 		{"diff", "--name-only", "-z", "HEAD"},
 		{"ls-files", "--others", "--exclude-standard", "-z"},
 	} {
-		rc, sout := runCmd(time.Minute, workdir, nil, "git", args...)
+		rc, sout := runCmd(time.Minute, workdir, nil, "", "git", args...)
 		if rc != 0 {
 			return nil, fmt.Errorf("git %s failed", strings.Join(args, " "))
 		}
@@ -251,12 +251,7 @@ func cmdRunOnce() int {
 		return 1
 	}
 	tracef("run-once: %d task(s) in queue", len(tasks))
-	var t *Task
-	for i := range tasks {
-		if tasks[i].State == "queued" && (t == nil || tasks[i].CreatedAt < t.CreatedAt) {
-			t = &tasks[i]
-		}
-	}
+	t := pickNextTask(tasks)
 	if t == nil {
 		fmt.Println("nothing queued")
 		return 0
@@ -284,55 +279,135 @@ func cmdRunOnce() int {
 
 	workdir := filepath.Join(workDir, tid)
 	os.RemoveAll(workdir)
-	tracef("run-once: cloning %s", t.RepoURL)
-	rec.beginStage("clone")
-	if rc, out := runCmd(3*time.Minute, "", nil, "git", gitCloneArgs(t.RepoURL, workdir)...); rc != 0 {
-		return failTask(t, rec, "clone failed\n"+tailStr(out, 2000))
+
+	if err := runCloneStage(t, rec, workdir); err != nil {
+		return failTask(t, rec, err.Error())
 	}
-	rec.endStage(true)
-	logf(tid, "cloned ok")
 
 	tj, _ := json.Marshal(map[string]string{"title": t.Title, "body": t.Body})
 	os.WriteFile(filepath.Join(workdir, "task.json"), tj, 0644)
 
-	// Sizing pass: if the task is too large for one agent run, split it
-	// into sub-issues instead of burning the turn budget. splitTask
-	// reports whether it handled the task; otherwise fall through to the
-	// main agent as before.
+	sv, handled, err := runSizeStage(t, rec, workdir)
+	if err != nil {
+		return failTask(t, rec, "sizer: "+err.Error())
+	}
+	if handled {
+		return 0
+	}
+	if sv != nil {
+		logf(tid, "sizer: split not possible — running main agent")
+	}
+
+	ar := runAgentStage(t, rec, workdir)
+
+	res, err := runValidateStage(t, rec, workdir)
+	if err != nil {
+		return failTask(t, rec, err.Error())
+	}
+
+	if ar.name != "stub" {
+		if !runSandboxTestStage(t, rec) {
+			return failTask(t, rec, "sandbox test run failed — no PR opened")
+		}
+	}
+
+	// Factory metadata stays out of the commit.
+	for _, meta := range []string{"task.json", "result.json", "size.json"} {
+		os.Remove(filepath.Join(workdir, meta))
+	}
+
+	branch := "factory/" + tid
+	if err := runPushStage(t, rec, workdir, branch); err != nil {
+		return failTask(t, rec, err.Error())
+	}
+
+	labelIssueCompleted(t)
+
+	tracef("run-once: creating PR from %s", branch)
+	rec.beginStage("pr")
+	prURL := createPR(t, branch, rec)
+	rec.endStage(true)
+	rec.Outcome = "pr_open"
+	rec.PRURL = prURL
+	if cf, ok := res["changed_files"].([]any); ok {
+		rec.ChangedFiles = len(cf)
+	}
+	if s, ok := res["summary"].(string); ok {
+		rec.Summary = firstLine(s, 200)
+	}
+	if prURL != "" {
+		commentOnIssue(t, "minifactory: done \u2014 "+prURL+"\nTests passed in an isolated sandbox. Merge the PR to complete.\n"+rec.summaryLine())
+		labelIssueCreatedPR(t)
+	}
+	setState(tid, "pr_open", branch, prURL)
+	logf(tid, "state -> pr_open (human gate: merge the PR in GitHub)")
+	return 0
+}
+
+// pickNextTask returns the oldest queued task, or nil when none is queued.
+func pickNextTask(tasks []Task) *Task {
+	var t *Task
+	for i := range tasks {
+		if tasks[i].State == "queued" && (t == nil || tasks[i].CreatedAt < t.CreatedAt) {
+			t = &tasks[i]
+		}
+	}
+	return t
+}
+
+// runCloneStage clones the repo into workdir and times the clone stage.
+func runCloneStage(t *Task, rec *RunRecord, workdir string) error {
+	tid := t.ID
+	tracef("run-once: cloning %s", t.RepoURL)
+	rec.beginStage("clone")
+	if rc, out := runCmd(3*time.Minute, "", nil, "", "git", gitCloneArgs(t.RepoURL, workdir)...); rc != 0 {
+		return fmt.Errorf("clone failed\n%s", tailStr(out, 2000))
+	}
+	rec.endStage(true)
+	logf(tid, "cloned ok")
+	return nil
+}
+
+// runSizeStage runs the sizing pass. It returns the verdict, whether the
+// split was handled (task is complete), and any error.
+func runSizeStage(t *Task, rec *RunRecord, workdir string) (*sizeVerdict, bool, error) {
+	tid := t.ID
 	tracef("run-once: sizing pass (fit vs split)")
 	sv, sizerUsage, serr := runSizer(t, workdir, rec)
 	if serr != nil {
-		// Auth is dead: the main agent would fail identically, so fail
-		// fast instead of burning another call. Retrying can't help until
-		// the token is fixed.
-		return failTask(t, rec, "sizer: "+serr.Error())
+		return nil, false, serr
 	}
 	rec.setUsage(sizerUsage, nil)
 	checkOverBudget(rec, sizerUsage, "sizer")
 	if sv != nil {
-		if rc, done := splitTask(t, rec, sv); done {
-			return rc
+		if _, done := splitTask(t, rec, sv); done {
+			return nil, true, nil
 		}
 		logf(tid, "sizer: split not possible — running main agent")
 	}
+	return sv, false, nil
+}
 
+// runAgentStage runs the selected agent and records its usage and sandboxing.
+func runAgentStage(t *Task, rec *RunRecord, workdir string) agentRun {
 	tracef("run-once: starting agent")
-	ar := runAgent(t, rec) // logs everything; hard failures surface via result.json
+	ar := runAgent(t, rec)
 	tracef("run-once: agent finished")
 	rec.setUsage(nil, ar.usage)
 	rec.Sandboxed = ar.sandboxed
 	checkOverBudget(rec, ar.usage, "agent")
+	return ar
+}
 
-	// Hygiene before verification: test runs and agents leave Python
-	// bytecode behind (__pycache__/, *.pyc), which would pollute the
-	// changed-files cross-check below. ensureGitignore may touch
-	// .gitignore; when it does, that file is excluded from the check.
+// runValidateStage validates result.json and cross-checks changed_files
+// against git status. It returns the parsed result and any error.
+func runValidateStage(t *Task, rec *RunRecord, workdir string) (map[string]any, error) {
+	tid := t.ID
 	rec.beginStage("validate")
 	cleanPythonCache(workdir)
 	gitignoreTouched := ensureGitignore(workdir)
 	logf(tid, "pre-commit hygiene: cleaned bytecode caches, ensured .gitignore")
 
-	// Validate the typed handoff: result.json {changed_files[], tests_passed, summary}.
 	tracef("run-once: validating result.json")
 	var res map[string]any
 	valid := false
@@ -347,86 +422,53 @@ func cmdRunOnce() int {
 		logf(tid, "result.json missing/invalid: %v", err)
 	}
 	if !valid {
-		return failTask(t, rec, "validation failed — no PR opened")
+		return nil, fmt.Errorf("validation failed — no PR opened")
 	}
 	if s, ok := res["summary"].(string); ok {
 		logf(tid, "validation passed: %s", firstLine(s, 160))
 	}
 
-	// Cross-check the agent's claimed changed_files against what git sees.
-	// The agent ran across a trust boundary (sandbox, or the host
-	// fallback), so a dishonest handoff fails the task instead of opening
-	// a PR on it.
 	if !changedFilesMatch(workdir, res["changed_files"], gitignoreTouched) {
-		return failTask(t, rec, "changed_files does not match git status — no PR opened")
+		return nil, fmt.Errorf("changed_files does not match git status — no PR opened")
 	}
 	logf(tid, "changed_files verified against git status")
 	rec.endStage(true)
+	return res, nil
+}
 
-	// Trust boundary on the generated code: the agent's tests_passed claim
-	// is re-verified here, never trusted. The stub already ran its tests
-	// in-sandbox, so this is skipped for it.
+// runSandboxTestStage re-runs the repo test suite in a sandbox for
+// non-stub agents (the trust boundary on the agent's tests_passed claim).
+func runSandboxTestStage(t *Task, rec *RunRecord) bool {
 	tracef("run-once: running tests in sandbox")
-	if ar.name != "stub" {
-		rec.beginStage("sandbox_tests")
-		testsOK := runTestsInSandbox(t)
-		rec.endStage(testsOK)
-		if !testsOK {
-			return failTask(t, rec, "sandbox test run failed — no PR opened")
-		}
-	}
+	rec.beginStage("sandbox_tests")
+	testsOK := runTestsInSandbox(t)
+	rec.endStage(testsOK)
+	return testsOK
+}
 
-	// Factory metadata stays out of the commit.
-	for _, meta := range []string{"task.json", "result.json", "size.json"} {
-		os.Remove(filepath.Join(workdir, meta))
-	}
-
-	branch := "factory/" + tid
+// runPushStage commits the agent's changes and pushes them as a branch.
+func runPushStage(t *Task, rec *RunRecord, workdir, branch string) error {
+	tid := t.ID
 	tracef("run-once: committing and pushing branch %s", branch)
 	rec.beginStage("push")
-	if rc, out := runCmd(time.Minute, workdir, nil, "git", "checkout", "-b", branch); rc != 0 {
-		return failTask(t, rec, "checkout -b failed\n"+tailStr(out, 1000))
+	if rc, out := runCmd(time.Minute, workdir, nil, "", "git", "checkout", "-b", branch); rc != 0 {
+		return fmt.Errorf("checkout -b failed\n%s", tailStr(out, 1000))
 	}
-	if _, out := runCmd(time.Minute, workdir, nil, "git", "status", "--porcelain"); strings.TrimSpace(out) == "" {
-		return failTask(t, rec, "agent made no changes")
+	if _, out := runCmd(time.Minute, workdir, nil, "", "git", "status", "--porcelain"); strings.TrimSpace(out) == "" {
+		return fmt.Errorf("agent made no changes")
 	}
-	runCmd(time.Minute, workdir, nil, "git", "add", "-A")
-	if rc, out := runCmd(time.Minute, workdir, nil, "git",
+	runCmd(time.Minute, workdir, nil, "", "git", "add", "-A")
+	if rc, out := runCmd(time.Minute, workdir, nil, "", "git",
 		"-c", "user.name=minifactory", "-c", "user.email=minifactory@localhost",
 		"commit", "-m", "factory: "+firstLine(t.Title, 72)); rc != 0 {
-		return failTask(t, rec, "commit failed\n"+tailStr(out, 1000))
+		return fmt.Errorf("commit failed\n%s", tailStr(out, 1000))
 	}
 	if rc, out := gitPush(workdir, branch, t.RepoURL); rc != 0 {
-		return failTask(t, rec, "push failed\n"+tailStr(out, 2000))
+		return fmt.Errorf("push failed\n%s", tailStr(out, 2000))
 	}
 	rec.endStage(true)
 	logf(tid, "pushed branch "+branch)
-
-	// The factory's work is complete: tests passed in the sandbox and the
-	// branch is pushed.
-	labelIssueCompleted(t)
-
-	tracef("run-once: creating PR from %s", branch)
-	rec.beginStage("pr")
-	labelIssueCompleted(t)
-	prURL := createPR(t, branch, rec)
-	rec.endStage(true)
-	rec.Outcome = "pr_open"
-	rec.PRURL = prURL
-	if cf, ok := res["changed_files"].([]any); ok {
-		rec.ChangedFiles = len(cf)
-	}
-	if s, ok := res["summary"].(string); ok {
-		rec.Summary = firstLine(s, 200)
-	}
-	if prURL != "" {
-		commentOnIssue(t, "minifactory: done \u2014 "+prURL+"\nTests passed in an isolated sandbox. Merge the PR to complete.\n"+rec.summaryLine())
-		// PR is open and awaiting human review/merge.
-		labelIssueCreatedPR(t)
-	}
-	setState(tid, "pr_open", branch, prURL)
-	logf(tid, "state -> pr_open (human gate: merge the PR in GitHub)")
-	return 0
+	return nil
 }
 
 // splitTask decomposes an oversized task into GitHub sub-issues and marks

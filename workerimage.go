@@ -240,7 +240,7 @@ func (c *depChecker) ensureWorkerImage() depStatus {
 			// Already current: no rebuild, but still clean up a
 			// builder image left behind by an earlier build.
 			c.cleanupWorkerBuilderImage()
-			return depStatus{tool, depPresent, info.detail}
+			return depStatus{tool, depOK, info.detail}
 		}
 		stale, staleVersion = true, info.version
 	}
@@ -277,9 +277,9 @@ func (c *depChecker) ensureWorkerImage() depStatus {
 		}
 		c.cleanupWorkerBuilderImage()
 		if stale {
-			return depStatus{tool, depBuilt, "rebuilt stale worker image: " + info.detail}
+			return depStatus{tool, depInstalled, "rebuilt stale worker image: " + info.detail}
 		}
-		return depStatus{tool, depBuilt, info.detail}
+		return depStatus{tool, depInstalled, info.detail}
 	}
 	c.printf("  warning: worker image build reported success but `docker image inspect %s` still fails", workerImage)
 	return depStatus{tool, depBuildFailed, "build ran but image still not present; re-run `minifactory init` or `docker build -t " + workerImage + " worker/` from a repo checkout"}

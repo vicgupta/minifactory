@@ -83,7 +83,7 @@ func gitAuthArgs(repoURL string) []string {
 func gitPush(workdir, branch, repoURL string) (int, string) {
 	args := append([]string{}, gitAuthArgs(normalizeRepoURL(repoURL))...)
 	args = append(args, "push", "origin", branch)
-	return runCmd(2*time.Minute, workdir, nil, "git", args...)
+	return runCmd(2*time.Minute, workdir, nil, "", "git", args...)
 }
 
 // normalizeRepoURL accepts the forms a user might pass to `issue --repo`
@@ -201,6 +201,46 @@ func createIssue(org, repo, title, body string) (int, error) {
 	return is.Number, nil
 }
 
+// setIssueLabels replaces an issue's labels with labels. Best-effort:
+// failures are logged, never fatal. Silent no-op for manual issues
+// (num == 0) or when GitHub isn't configured.
+func setIssueLabels(org, repo string, num int, labels []string) error {
+	if num == 0 || githubToken == "" {
+		return nil
+	}
+	raw, err := ghDo("GET", "/repos/"+org+"/"+repo+"/issues/"+strconv.Itoa(num)+"/labels", nil)
+	if err != nil {
+		return fmt.Errorf("read issue labels: %w", err)
+	}
+	var cur []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &cur); err != nil {
+		return fmt.Errorf("parse issue labels: %w", err)
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	for _, l := range cur {
+		if seen[l.Name] {
+			continue
+		}
+		seen[l.Name] = true
+		out = append(out, l.Name)
+	}
+	for _, l := range labels {
+		if seen[l] {
+			continue
+		}
+		seen[l] = true
+		out = append(out, l)
+	}
+	if _, err := ghDo("PUT", "/repos/"+org+"/"+repo+"/issues/"+strconv.Itoa(num)+"/labels",
+		map[string]any{"labels": out}); err != nil {
+		return fmt.Errorf("set issue labels: %w", err)
+	}
+	return nil
+}
+
 // addIssueLabel adds label to an issue, preserving its other labels. The
 // label is created on the repo first when missing. Used by `issue --issue`.
 func addIssueLabel(repoURL string, num int, label string) error {
@@ -233,8 +273,7 @@ func addIssueLabel(repoURL string, num int, label string) error {
 	if !seen[label] {
 		labels = append(labels, label)
 	}
-	if _, err := ghDo("PUT", "/repos/"+org+"/"+repo+"/issues/"+strconv.Itoa(num)+"/labels",
-		map[string]any{"labels": labels}); err != nil {
+	if err := setIssueLabels(org, repo, num, labels); err != nil {
 		return fmt.Errorf("set issue labels: %w", err)
 	}
 	return nil
@@ -280,8 +319,7 @@ func swapIssueLabel(t *Task, remove, add, color, description string) {
 	if !seen[add] {
 		labels = append(labels, add)
 	}
-	if _, err := ghDo("PUT", "/repos/"+org+"/"+repo+"/issues/"+strconv.Itoa(t.IssueNumber)+"/labels",
-		map[string]any{"labels": labels}); err != nil {
+	if err := setIssueLabels(org, repo, t.IssueNumber, labels); err != nil {
 		logf(t.ID, "WARNING: replace issue labels failed: %v", err)
 	}
 }
@@ -366,8 +404,7 @@ func labelIssueReady(t *Task) {
 	if !seen[labelReady] {
 		labels = append(labels, labelReady)
 	}
-	if _, err := ghDo("PUT", "/repos/"+org+"/"+repo+"/issues/"+strconv.Itoa(t.IssueNumber)+"/labels",
-		map[string]any{"labels": labels}); err != nil {
+	if err := setIssueLabels(org, repo, t.IssueNumber, labels); err != nil {
 		logf(t.ID, "WARNING: reset issue labels failed: %v", err)
 	}
 }

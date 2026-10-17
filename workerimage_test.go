@@ -133,7 +133,7 @@ func TestWorkerImageNoLabelRebuilds(t *testing.T) {
 	f.daemon = true
 	f.imageVersion = "" // pre-label image (Node 20 era)
 	got := ensureDeps(f.env("linux", 1000, debianRelease))
-	if got[2].State != depBuilt || !strings.Contains(got[2].Detail, "rebuilt stale") {
+	if got[2].State != depInstalled || !strings.Contains(got[2].Detail, "rebuilt stale") {
 		t.Fatalf("worker image = %+v, want rebuilt stale", got[2])
 	}
 	if !strings.Contains(fmt.Sprint(f.installs), "docker build") {
@@ -146,7 +146,7 @@ func TestWorkerImageOldLabelRebuilds(t *testing.T) {
 	f.daemon = true
 	f.imageVersion = "0"
 	got := ensureDeps(f.env("linux", 1000, debianRelease))
-	if got[2].State != depBuilt || !strings.Contains(got[2].Detail, "rebuilt stale") {
+	if got[2].State != depInstalled || !strings.Contains(got[2].Detail, "rebuilt stale") {
 		t.Fatalf("worker image = %+v, want rebuilt stale", got[2])
 	}
 	if !strings.Contains(fmt.Sprint(f.installs), "docker build") {
@@ -161,7 +161,7 @@ func TestWorkerImageLabel1Rebuilds(t *testing.T) {
 	f.daemon = true
 	f.imageVersion = "1"
 	got := ensureDeps(f.env("linux", 1000, debianRelease))
-	if got[2].State != depBuilt || !strings.Contains(got[2].Detail, "rebuilt stale") {
+	if got[2].State != depInstalled || !strings.Contains(got[2].Detail, "rebuilt stale") {
 		t.Fatalf("worker image = %+v, want rebuilt stale for label 1", got[2])
 	}
 	if !strings.Contains(fmt.Sprint(f.installs), "docker build") {
@@ -192,7 +192,7 @@ func TestWorkerImageBuildRemovesBuilderImage(t *testing.T) {
 	f.daemon = true
 	f.imagePresent = false
 	got := ensureDeps(f.env("linux", 1000, debianRelease))
-	if got[2].State != depBuilt {
+	if got[2].State != depInstalled {
 		t.Fatalf("worker image = %+v, want built", got[2])
 	}
 	ref := workerBuilderImageRef()
@@ -241,7 +241,7 @@ func TestWorkerImageBuilderCleanupFailureWarnsButSucceeds(t *testing.T) {
 	f.imagePresent = false
 	f.failBuilderRm = true
 	got := ensureDeps(f.env("linux", 1000, debianRelease))
-	if got[2].State != depBuilt || got[2].outstanding() {
+	if got[2].State != depInstalled || got[2].outstanding() {
 		t.Fatalf("worker image = %+v, want built (cleanup failure must not fail init)", got[2])
 	}
 	if !strings.Contains(installsJoined(f), "docker image rm "+workerBuilderImageRef()) {
@@ -262,7 +262,7 @@ func TestWorkerImageCurrentWithLingeringBuilderCleansUp(t *testing.T) {
 	f.imageVersion = workerImageVersion
 	f.builderPresent = true
 	got := ensureDeps(f.env("linux", 1000, debianRelease))
-	if got[2].State != depPresent {
+	if got[2].State != depOK {
 		t.Fatalf("worker image = %+v, want present (no rebuild)", got[2])
 	}
 	joined := installsJoined(f)
@@ -284,7 +284,7 @@ func TestWorkerImageCurrentBuilderCleanupFailureStillPresent(t *testing.T) {
 	f.builderPresent = true
 	f.failBuilderRm = true
 	got := ensureDeps(f.env("linux", 1000, debianRelease))
-	if got[2].State != depPresent || got[2].outstanding() {
+	if got[2].State != depOK || got[2].outstanding() {
 		t.Fatalf("worker image = %+v, want present despite cleanup failure", got[2])
 	}
 	if !strings.Contains(f.outBuf.String(), "warning: could not remove builder image") {
