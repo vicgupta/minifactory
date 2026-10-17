@@ -399,6 +399,32 @@ func checkDocker() checkResult {
 		}
 	}
 	lines = append(lines, "worker image \""+workerImage+"\": present (created "+created+", "+size+")")
+	// Sandboxed agent runs need the vendor CLIs inside the worker image.
+	// A missing CLI for the selected agent is a hard fail: the factory
+	// would silently fall back to weaker host execution.
+	agent := selectAgent()
+	if agent != "stub" {
+		rc, out = runCmd(30*time.Second, "", nil, "docker", "run", "--rm", workerImage,
+			"sh", "-c", `for c in claude codex opencode; do command -v "$c" >/dev/null 2>&1 && echo "$c:yes" || echo "$c:no"; done`)
+		if rc != 0 {
+			return checkResult{"docker", statusFail,
+				strings.Join(lines, "\n      ") + "\n      could not probe worker image for agent CLIs: " + strings.TrimSpace(firstLine(out, 200))}
+		}
+		have := map[string]bool{}
+		for _, f := range strings.Fields(strings.TrimSpace(out)) {
+			if kv := strings.SplitN(f, ":", 2); len(kv) == 2 {
+				have[kv[0]] = kv[1] == "yes"
+			}
+		}
+		want := map[string]string{"claude": "claude", "codex": "codex", "opencode": "opencode"}[agent]
+		if !have[want] {
+			return checkResult{"docker", statusFail,
+				strings.Join(lines, "\n      ") + "\n      worker image lacks `" + want + "` for agent " + agent +
+					" — rebuild it (docker build -t " + workerImage + " worker/)"}
+		}
+		lines = append(lines, "agent CLIs in worker image: claude="+onOff(have["claude"])+
+			" codex="+onOff(have["codex"])+" opencode="+onOff(have["opencode"]))
+	}
 	return checkResult{"docker", statusOK, strings.Join(lines, "\n      ")}
 }
 
