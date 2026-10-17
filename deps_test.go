@@ -42,7 +42,11 @@ type fakeHost struct {
 	imagePresent bool
 	imageVersion string
 	failBuild    bool
-	outBuf       *bytes.Buffer
+	// builderPresent simulates the tagged builder-stage (golang) image
+	// lingering in the local store; failBuilderRm makes its removal fail.
+	builderPresent bool
+	failBuilderRm  bool
+	outBuf         *bytes.Buffer
 }
 
 func (f *fakeHost) inGroup(name string) bool {
@@ -93,6 +97,11 @@ func (f *fakeHost) env(goos string, euid int, osRelease string) depEnv {
 				return 0, "docker:x:999:vic\n"
 			}
 			return 2, ""
+		case name == "docker" && len(args) > 2 && args[0] == "image" && args[1] == "inspect" && args[2] == workerBuilderImageRef():
+			if f.builderPresent {
+				return 0, "sha256:fakebuilderid456\n"
+			}
+			return 1, "fake: no such builder image"
 		case name == "docker" && len(args) > 1 && args[0] == "image" && args[1] == "inspect" && f.imagePresent:
 			return 0, "sha256:fakeimageid123|123456789|" + f.imageVersion + "\n"
 		case name == "sg" && f.inGroup("docker"):
@@ -104,6 +113,13 @@ func (f *fakeHost) env(goos string, euid int, osRelease string) depEnv {
 		full := append([]string{name}, args...)
 		f.installs = append(f.installs, full)
 		joined0 := strings.Join(full, " ")
+		if strings.Contains(joined0, "docker image rm ") {
+			if f.failBuilderRm {
+				return 1, "fake builder removal failure\nimage is being used by a container"
+			}
+			f.builderPresent = false
+			return 0, ""
+		}
 		if f.failGroupadd && strings.Contains(joined0, "groupadd") {
 			return 1, "fake groupadd failure"
 		}
@@ -116,6 +132,7 @@ func (f *fakeHost) env(goos string, euid int, osRelease string) depEnv {
 			}
 			f.imagePresent = true
 			f.imageVersion = workerImageVersion
+			f.builderPresent = true
 		}
 		if strings.Contains(joined0, "groupadd docker") {
 			f.groupExists = true

@@ -12,6 +12,13 @@ package main
 // minifactory.worker-version label does not match workerImageVersion
 // below; pre-label images have no label and so are always stale). A
 // current image is never rebuilt or pulled.
+//
+// A normal multi-stage `docker build` pulls and retains the tagged
+// builder-stage image (golang:...) locally. After a successful build —
+// and also on the already-current path, to clean up images left by
+// earlier builds — init removes that exact builder image on a
+// best-effort basis. The ref is derived from the Dockerfile's
+// builder-stage FROM line, never hardcoded a second time.
 
 import (
 	"embed"
@@ -111,6 +118,78 @@ func probeWorkerImageInfo(env depEnv) (workerImageInfo, bool) {
 	return parseWorkerImageInspect(out)
 }
 
+// parseBuilderImageRef returns the image ref of the first named
+// (builder) stage in a Dockerfile: the FROM line carrying an `AS <name>`
+// clause. Later stages (the shipped python image) have no need for a
+// local tag from our build and are never returned: only a FROM with an
+// AS clause qualifies, and the first such stage is the builder. Returns
+// "" when no named stage is found.
+func parseBuilderImageRef(dockerfile string) string {
+	for _, line := range strings.Split(dockerfile, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 || !strings.EqualFold(fields[0], "FROM") {
+			continue
+		}
+		i := 1
+		for i < len(fields) && strings.HasPrefix(fields[i], "--") {
+			i++ // skip FROM flags such as --platform=...
+		}
+		if i >= len(fields) {
+			continue
+		}
+		for j := i + 1; j < len(fields); j++ {
+			if strings.EqualFold(fields[j], "AS") {
+				return fields[i]
+			}
+		}
+	}
+	return ""
+}
+
+// workerBuilderImageRef derives the build-only builder image ref from
+// the embedded worker/Dockerfile builder stage, so it cannot drift from
+// the Dockerfile the way a second hardcoded copy could.
+func workerBuilderImageRef() string {
+	b, err := workerContextFS.ReadFile("worker/Dockerfile")
+	if err != nil {
+		return ""
+	}
+	return parseBuilderImageRef(string(b))
+}
+
+// cleanupWorkerBuilderImage removes the build-only builder image (the
+// golang image pulled for the Dockerfile's builder stage) from the local
+// Docker image store, so `docker images` does not keep listing it after
+// init. It only ever removes that exact ref — no prunes. Best-effort:
+// when the image is absent nothing happens, and a failed removal (image
+// in use, already gone, ...) warns and continues; it never fails init.
+func (c *depChecker) cleanupWorkerBuilderImage() {
+	ref := workerBuilderImageRef()
+	if ref == "" || ref == workerImage {
+		return
+	}
+	if rc, _ := c.env.run(15*time.Second, "docker", "image", "inspect", ref); rc != 0 {
+		return // not present locally — nothing to clean up
+	}
+	c.printf("  worker image: removing build-only builder image %s (builder stage of worker/Dockerfile; not needed by %s)", ref, workerImage)
+	cmd := []string{"docker", "image", "rm", ref}
+	c.printf("  $ %s", strings.Join(cmd, " "))
+	rc, out := c.env.runInstall(cmd[0], cmd[1:]...)
+	if rc != 0 {
+		last := lastNonEmptyLine(out)
+		if last == "" {
+			last = fmt.Sprintf("exit %d", rc)
+		}
+		c.printf("  warning: could not remove builder image %s (%s) — continuing; remove it with `docker image rm %s`", ref, last, ref)
+		return
+	}
+	c.printf("  worker image: removed build-only builder image %s", ref)
+}
+
 // probeWorkerImage reports the image's id/size when present as the user.
 func probeWorkerImage(env depEnv) (string, bool) {
 	info, ok := probeWorkerImageInfo(env)
@@ -158,6 +237,9 @@ func (c *depChecker) ensureWorkerImage() depStatus {
 	stale, staleVersion := false, ""
 	if info, present := probeWorkerImageInfo(c.env); present {
 		if !workerImageVersionStale(info.version) {
+			// Already current: no rebuild, but still clean up a
+			// builder image left behind by an earlier build.
+			c.cleanupWorkerBuilderImage()
 			return depStatus{tool, depPresent, info.detail}
 		}
 		stale, staleVersion = true, info.version
@@ -193,6 +275,7 @@ func (c *depChecker) ensureWorkerImage() depStatus {
 			c.printf("  warning: worker image build reported success but its worker-version is %q, want %q", info.version, workerImageVersion)
 			return depStatus{tool, depBuildFailed, fmt.Sprintf("build ran but worker image version is %q, want %q; re-run `minifactory init` or `docker build -t "+workerImage+" worker/` from a repo checkout", info.version, workerImageVersion)}
 		}
+		c.cleanupWorkerBuilderImage()
 		if stale {
 			return depStatus{tool, depBuilt, "rebuilt stale worker image: " + info.detail}
 		}

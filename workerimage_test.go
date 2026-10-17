@@ -126,3 +126,126 @@ func TestWorkerImageOldLabelRebuilds(t *testing.T) {
 		t.Errorf("old-label image was not rebuilt: %v", f.installs)
 	}
 }
+
+func TestBuilderImageRefDerivedFromDockerfile(t *testing.T) {
+	if got := workerBuilderImageRef(); got != "golang:1.26-bookworm" {
+		t.Errorf("workerBuilderImageRef() = %q, want golang:1.26-bookworm (from embedded Dockerfile)", got)
+	}
+	for in, want := range map[string]string{
+		"FROM golang:1.26-bookworm AS build\nFROM python:3.12-slim\n": "golang:1.26-bookworm",
+		"FROM --platform=linux/amd64 golang:1.26 AS build\n":          "golang:1.26",
+		"from golang:1.26 as build\n":                                 "golang:1.26",
+		"FROM python:3.12-slim\n":                                     "",
+		"# FROM golang:1.26 AS build\nFROM python:3.12-slim\n":        "",
+	} {
+		if got := parseBuilderImageRef(in); got != want {
+			t.Errorf("parseBuilderImageRef(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// (1) Successful build triggers builder-image removal.
+func TestWorkerImageBuildRemovesBuilderImage(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.daemon = true
+	f.imagePresent = false
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[2].State != depBuilt {
+		t.Fatalf("worker image = %+v, want built", got[2])
+	}
+	ref := workerBuilderImageRef()
+	joined := installsJoined(f)
+	if !strings.Contains(joined, "docker image rm "+ref) {
+		t.Errorf("installs = %v, want docker image rm %s after build", f.installs, ref)
+	}
+	if f.builderPresent {
+		t.Error("builder image still present after cleanup")
+	}
+	out := f.outBuf.String()
+	if !strings.Contains(out, "$ docker image rm "+ref) || !strings.Contains(out, "removed build-only builder image "+ref) {
+		t.Errorf("output missing printed builder removal:\n%s", out)
+	}
+	if strings.Contains(joined, "system prune") || strings.Contains(joined, "image prune") {
+		t.Errorf("cleanup used a broad prune: %v", f.installs)
+	}
+}
+
+// (2) Failed build does NOT claim cleanup / does not remove anything.
+func TestWorkerImageFailedBuildDoesNotRemoveBuilderImage(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.daemon = true
+	f.imagePresent = false
+	f.builderPresent = true // lingering from an earlier build
+	f.failBuild = true
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[2].State != depBuildFailed {
+		t.Fatalf("worker image = %+v, want build failed", got[2])
+	}
+	if strings.Contains(installsJoined(f), "docker image rm") {
+		t.Errorf("failed build removed an image: %v", f.installs)
+	}
+	if !f.builderPresent {
+		t.Error("failed build should leave the builder image untouched")
+	}
+	if strings.Contains(f.outBuf.String(), "removed build-only builder image") {
+		t.Errorf("failed build claimed cleanup:\n%s", f.outBuf.String())
+	}
+}
+
+// (3) Cleanup failure warns but init (ensureDeps) still succeeds.
+func TestWorkerImageBuilderCleanupFailureWarnsButSucceeds(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.daemon = true
+	f.imagePresent = false
+	f.failBuilderRm = true
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[2].State != depBuilt || got[2].outstanding() {
+		t.Fatalf("worker image = %+v, want built (cleanup failure must not fail init)", got[2])
+	}
+	if !strings.Contains(installsJoined(f), "docker image rm "+workerBuilderImageRef()) {
+		t.Errorf("installs = %v, want attempted builder removal", f.installs)
+	}
+	out := f.outBuf.String()
+	if !strings.Contains(out, "warning: could not remove builder image "+workerBuilderImageRef()) {
+		t.Errorf("output missing cleanup-failure warning:\n%s", out)
+	}
+}
+
+// (4) Current worker image + lingering builder image on the no-build
+// path still gets cleaned, without rebuilding the worker image.
+func TestWorkerImageCurrentWithLingeringBuilderCleansUp(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.daemon = true
+	f.imagePresent = true
+	f.imageVersion = workerImageVersion
+	f.builderPresent = true
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[2].State != depPresent {
+		t.Fatalf("worker image = %+v, want present (no rebuild)", got[2])
+	}
+	joined := installsJoined(f)
+	if strings.Contains(joined, "docker build") {
+		t.Errorf("current image was rebuilt: %v", f.installs)
+	}
+	if !strings.Contains(joined, "docker image rm "+workerBuilderImageRef()) {
+		t.Errorf("installs = %v, want lingering builder removal on no-build path", f.installs)
+	}
+	if f.builderPresent {
+		t.Error("lingering builder image still present after no-build cleanup")
+	}
+}
+
+// No-build cleanup failure also warns but keeps the present status.
+func TestWorkerImageCurrentBuilderCleanupFailureStillPresent(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.daemon = true
+	f.builderPresent = true
+	f.failBuilderRm = true
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[2].State != depPresent || got[2].outstanding() {
+		t.Fatalf("worker image = %+v, want present despite cleanup failure", got[2])
+	}
+	if !strings.Contains(f.outBuf.String(), "warning: could not remove builder image") {
+		t.Errorf("output missing cleanup-failure warning:\n%s", f.outBuf.String())
+	}
+}

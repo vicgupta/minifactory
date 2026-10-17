@@ -387,7 +387,26 @@ go test ./... 2>&1 | tail -3
 
 echo "== 4. worker image =="
 [ -f "$APP_DIR/worker/Dockerfile" ] || { echo "worker/Dockerfile missing" >&2; exit 1; }
-docker build -q -t factory-worker-go "$APP_DIR/worker/" >/dev/null && pass "factory-worker-go image built"
+if docker build -q -t factory-worker-go "$APP_DIR/worker/" >/dev/null; then
+    pass "factory-worker-go image built"
+    # A multi-stage build pulls and retains the tagged builder-stage
+    # image (golang:...); remove that exact build-only image so
+    # `docker images` does not keep listing it. Best-effort: a failed
+    # removal warns and the install continues. No prunes.
+    BUILDER_IMAGE=$(awk '{ if (tolower($1) == "from") { for (i = 3; i <= NF; i++) { if (tolower($i) == "as") { print $2; exit } } } }' "$APP_DIR/worker/Dockerfile")
+    if [ -n "$BUILDER_IMAGE" ]; then
+        echo "  removing build-only builder image $BUILDER_IMAGE (builder stage of worker/Dockerfile)"
+        echo "  $ docker image rm $BUILDER_IMAGE"
+        if docker image rm "$BUILDER_IMAGE" >/dev/null 2>&1; then
+            pass "removed build-only builder image $BUILDER_IMAGE"
+        else
+            echo "  [warn] could not remove builder image $BUILDER_IMAGE — continuing; remove it with: docker image rm $BUILDER_IMAGE" >&2
+        fi
+    fi
+else
+    echo "factory-worker-go image build failed" >&2
+    exit 1
+fi
 
 echo "== 5. systemd =="
 # The service calls the binary by its absolute user-local path ($BIN_DIR),

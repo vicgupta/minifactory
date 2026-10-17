@@ -130,7 +130,14 @@ Configuration).
   `docker build -t factory-worker-go <context>` using the worker context
   embedded in the binary (the repo's `worker/Dockerfile` + `worker/stub.go`,
   extracted to a temp dir — no source checkout is needed), streams the
-  build, then re-verifies with `docker image inspect`. A current image
+  build, then re-verifies with `docker image inspect`. After a
+  successful build it also removes the build-only builder image named
+  by the Dockerfile's builder-stage `FROM` line (currently
+  `golang:1.26-bookworm`), printing `docker image rm <ref>` first, so
+  `docker images` does not keep listing it; the same best-effort
+  removal runs when the worker image is already current, cleaning up
+  builder images left by earlier builds, and a failed removal only
+  warns. A current image
   is left alone (delete it or run that `docker build` command from a
   checkout by hand to force a rebuild; `--force` does not rebuild it).
   When Docker is unavailable, the daemon is down, or the session cannot
