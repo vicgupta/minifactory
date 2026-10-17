@@ -25,7 +25,8 @@
 //	sync                                  update pr_open tasks from GitHub PR state
 //	list [--json] [--state s]               show tasks, optionally filtered
 //	                                      to one or more states
-//	logs <id>                             show a task's log
+//	logs <id> [--tail N]                  show a task's log, optionally the
+//	                                      last N lines only
 //	poll                                  enqueue new `ready`-labeled GitHub issues
 //	retry <id> [--force]                  reclaim a stuck/failed task
 //	report [--since Nd] [--task id] [--json]
@@ -247,7 +248,8 @@ func usage() {
                                       to states (comma-separated):
                                       queued,running,failed,pr_open,
                                       split,done
-  logs <id>                             show a task's log
+  logs <id> [--tail N]                  show a task's log, optionally the
+                                      last N lines only
   poll                                  enqueue new 'ready'-labeled GitHub issues
   retry <id> [--force]                  reclaim a stuck/failed task
   report [--since Nd] [--task id] [--json]
