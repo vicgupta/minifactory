@@ -15,7 +15,7 @@
 //
 // Subcommands:
 //
-//	issue --repo URL --title T --body B [--issue N]
+//	issue --repo URL --title T [--body B | --body-file PATH|-] [--issue N]
 //	                                      enqueue a task (prints task id);
 //	                                      creates a GitHub issue on the repo
 //	                                      and labels it factory-ready,
@@ -23,8 +23,10 @@
 //	                                      one
 //	run-once                              run the next queued task end-to-end
 //	sync                                  update pr_open tasks from GitHub PR state
-//	list [--json]                         show tasks
-//	logs <id>                             show a task's log
+//	list [--json] [--state s]               show tasks, optionally filtered
+//	                                      to one or more states
+//	logs <id> [--tail N]                  show a task's log, optionally the
+//	                                      last N lines only
 //	poll                                  enqueue new `ready`-labeled GitHub issues
 //	retry <id> [--force]                  reclaim a stuck/failed task
 //	report [--since Nd] [--task id] [--json]
@@ -281,17 +283,38 @@ func hasFlag(args []string, name string) bool {
 	return false
 }
 
+// flagPresent reports whether --name or --name=value appears in args.
+// Unlike hasFlag, it also matches the = form, so it detects a flag by
+// occurrence rather than by value.
+func flagPresent(args []string, name string) bool {
+	for _, a := range args {
+		if a == "--"+name {
+			return true
+		}
+		if _, ok := strings.CutPrefix(a, "--"+name+"="); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, `minifactory — queue -> sandbox -> PR
 
-  issue --repo URL --title T --body B [--issue N]
+  issue --repo URL --title T [--body B | --body-file PATH|-] [--issue N]
                          enqueue a task (prints task id); creates a GitHub
                          issue on the repo and labels it factory-ready,
-                         unless --issue N links an existing one
+                         unless --issue N links an existing one.
+                         The body may come from --body, from a file, or
+                         from stdin with --body-file -
   run-once                              run the next queued task end-to-end
   sync                                  update pr_open tasks from GitHub PR state
-  list [--json]                         show tasks
-  logs <id>                             show a task's log
+  list [--json] [--state s]               show tasks, optionally filtered
+                                      to states (comma-separated):
+                                      queued,running,failed,pr_open,
+                                      split,done
+  logs <id> [--tail N]                  show a task's log, optionally the
+                                      last N lines only
   poll                                  enqueue new 'ready'-labeled GitHub issues
   retry <id> [--force]                  reclaim a stuck/failed task
   report [--since Nd] [--task id] [--json]

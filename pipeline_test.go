@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -191,4 +193,355 @@ func TestRetryNoSuchTask(t *testing.T) {
 	if rc := cmdRetry([]string{"missing"}); rc == 0 {
 		t.Fatal("expected failure for unknown id")
 	}
+}
+
+func TestParseStateFilter(t *testing.T) {
+	got, err := parseStateFilter("failed")
+	if err != nil || len(got) != 1 || got[0] != "failed" {
+		t.Errorf("single: got %v, %v", got, err)
+	}
+	got, err = parseStateFilter("pr_open,failed")
+	if err != nil || len(got) != 2 || got[0] != "pr_open" || got[1] != "failed" {
+		t.Errorf("multi: got %v, %v", got, err)
+	}
+	got, err = parseStateFilter(" pr_open , failed ")
+	if err != nil || len(got) != 2 {
+		t.Errorf("whitespace: got %v, %v", got, err)
+	}
+	if _, err := parseStateFilter("faild"); err == nil {
+		t.Error("unknown state should error")
+	} else if !strings.Contains(err.Error(), "queued") || !strings.Contains(err.Error(), `"faild"`) {
+		t.Errorf("error should name the bad state and list valid ones: %v", err)
+	}
+	if _, err := parseStateFilter(""); err == nil {
+		t.Error("empty should error")
+	}
+	if _, err := parseStateFilter("  , "); err == nil {
+		t.Error("whitespace-only should error")
+	}
+}
+
+func TestCmdListStateFilter(t *testing.T) {
+	restore := testDirs(t)
+	defer restore()
+	seedTask(t, Task{ID: "a1", Title: "one", State: "failed", CreatedAt: 1})
+	seedTask(t, Task{ID: "b2", Title: "two", State: "pr_open", CreatedAt: 2})
+	seedTask(t, Task{ID: "c3", Title: "three", State: "queued", CreatedAt: 3})
+
+	out := captureStdout(t, func() {
+		if rc := cmdList([]string{"--state", "failed"}); rc != 0 {
+			t.Errorf("rc = %d", rc)
+		}
+	})
+	if !strings.Contains(out, "a1") || strings.Contains(out, "b2") || strings.Contains(out, "c3") {
+		t.Errorf("single-state filter wrong:\n%s", out)
+	}
+
+	out = captureStdout(t, func() {
+		if rc := cmdList([]string{"--state=pr_open,failed"}); rc != 0 {
+			t.Errorf("rc = %d", rc)
+		}
+	})
+	if !strings.Contains(out, "a1") || !strings.Contains(out, "b2") || strings.Contains(out, "c3") {
+		t.Errorf("multi-state filter wrong:\n%s", out)
+	}
+
+	// --json with a filter: only matching tasks in the array.
+	out = captureStdout(t, func() {
+		if rc := cmdList([]string{"--state", "queued", "--json"}); rc != 0 {
+			t.Errorf("rc = %d", rc)
+		}
+	})
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(out), &arr); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(arr) != 1 || arr[0]["id"] != "c3" {
+		t.Errorf("json filter wrong: %v", arr)
+	}
+
+	// Empty match prints [].
+	out = captureStdout(t, func() {
+		if rc := cmdList([]string{"--state", "done", "--json"}); rc != 0 {
+			t.Errorf("rc = %d", rc)
+		}
+	})
+	if strings.TrimSpace(out) != "[]" {
+		t.Errorf("empty match should print [], got %q", out)
+	}
+
+	// Unknown state: exit 2.
+	if rc := cmdList([]string{"--state", "faild"}); rc != 2 {
+		t.Errorf("unknown state rc = %d, want 2", rc)
+	}
+
+	// No filter: all three listed (unchanged behavior).
+	out = captureStdout(t, func() {
+		if rc := cmdList(nil); rc != 0 {
+			t.Errorf("rc = %d", rc)
+		}
+	})
+	if !strings.Contains(out, "a1") || !strings.Contains(out, "b2") || !strings.Contains(out, "c3") {
+		t.Errorf("unfiltered list wrong:\n%s", out)
+	}
+}
+
+// withStdin swaps os.Stdin for a pipe feeding input, returning a restore func.
+func withStdin(t *testing.T, input string) func() {
+	t.Helper()
+	old := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteString(input); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	os.Stdin = r
+	return func() {
+		os.Stdin = old
+		r.Close()
+	}
+}
+
+func TestFlagPresent(t *testing.T) {
+	args := []string{"--repo", "x", "--body=", "--body-file", "f"}
+	if !flagPresent(args, "repo") || !flagPresent(args, "body") || !flagPresent(args, "body-file") {
+		t.Errorf("flagPresent missed a present flag: %v", args)
+	}
+	if flagPresent(args, "title") || flagPresent(args, "bod") {
+		t.Errorf("flagPresent false positive: %v", args)
+	}
+	// --body must not collide with --body-file (or vice versa).
+	if !flagPresent(args, "body-file") || flagPresent([]string{"--body-file", "x"}, "body") {
+		t.Error("flagPresent prefix collision")
+	}
+}
+
+func TestCmdIssueBodyFile(t *testing.T) {
+	// setupIssue isolates the queue and neuters GitHub calls. Each subtest
+	// gets a fresh, empty queue.
+	setupIssue := func(t *testing.T) {
+		t.Helper()
+		restore := testDirs(t)
+		oldToken := githubToken
+		githubToken = ""
+		t.Cleanup(func() {
+			githubToken = oldToken
+			restore()
+		})
+	}
+	issueArgs := func(extra ...string) []string {
+		return append([]string{"--repo", "https://github.com/x/y.git", "--title", "T1"}, extra...)
+	}
+	queueBody := func(t *testing.T) (int, string) {
+		t.Helper()
+		tasks, err := listTasks()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 1 {
+			t.Fatalf("queue has %d tasks, want 1", len(tasks))
+		}
+		return len(tasks), tasks[0].Body
+	}
+	writeBodyFile := func(t *testing.T, name, content string) string {
+		t.Helper()
+		f := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(f, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	t.Run("file", func(t *testing.T) {
+		setupIssue(t)
+		want := "# Spec\n\nUse `backticks` and $vars untouched.\n"
+		f := writeBodyFile(t, "task.md", want)
+		var rc int
+		out := captureStdout(t, func() { rc = cmdIssue(issueArgs("--body-file", f)) })
+		if rc != 0 {
+			t.Fatalf("rc = %d", rc)
+		}
+		if id := strings.TrimSpace(out); id == "" || strings.Contains(id, "\n") {
+			t.Errorf("stdout should carry only the task id, got %q", out)
+		}
+		if _, got := queueBody(t); got != want {
+			t.Errorf("body mismatch: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("equals form", func(t *testing.T) {
+		setupIssue(t)
+		want := "equals-form body"
+		f := writeBodyFile(t, "spec.txt", want)
+		var rc int
+		captureStdout(t, func() { rc = cmdIssue(issueArgs("--body-file=" + f)) })
+		if rc != 0 {
+			t.Fatalf("rc = %d", rc)
+		}
+		if _, got := queueBody(t); got != want {
+			t.Errorf("body mismatch: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("stdin", func(t *testing.T) {
+		setupIssue(t)
+		want := "heredoc body with `ticks` and $dollar\n"
+		restoreStdin := withStdin(t, want)
+		defer restoreStdin()
+		var rc int
+		captureStdout(t, func() { rc = cmdIssue(issueArgs("--body-file", "-")) })
+		if rc != 0 {
+			t.Fatalf("rc = %d", rc)
+		}
+		if _, got := queueBody(t); got != want {
+			t.Errorf("body mismatch: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("both flags", func(t *testing.T) {
+		setupIssue(t)
+		f := writeBodyFile(t, "task.md", "x")
+		if rc := cmdIssue(issueArgs("--body", "inline", "--body-file", f)); rc != 2 {
+			t.Errorf("both flags: rc = %d, want 2", rc)
+		}
+		tasks, err := listTasks()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 0 {
+			t.Errorf("both flags: %d task(s) queued, want 0", len(tasks))
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		setupIssue(t)
+		f := filepath.Join(t.TempDir(), "nope.md")
+		if rc := cmdIssue(issueArgs("--body-file", f)); rc != 2 {
+			t.Errorf("missing file: rc = %d, want 2", rc)
+		}
+		tasks, err := listTasks()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 0 {
+			t.Errorf("missing file: %d task(s) queued, want 0", len(tasks))
+		}
+	})
+}
+
+func TestTailLines(t *testing.T) {
+	cases := []struct {
+		name string
+		s    string
+		n    int
+		want string
+	}{
+		{"empty", "", 5, ""},
+		{"only newline", "\n", 5, ""},
+		{"fewer lines than n", "a\nb\n", 5, "a\nb\n"},
+		{"exactly n lines", "a\nb\nc\n", 3, "a\nb\nc\n"},
+		{"more lines than n", "a\nb\nc\nd\n", 2, "c\nd\n"},
+		{"trailing newline not a line", "a\nb\n", 1, "b\n"},
+		{"no trailing newline", "a\nb", 1, "b\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := tailLines(c.s, c.n); got != c.want {
+				t.Errorf("tailLines(%q, %d) = %q, want %q", c.s, c.n, got, c.want)
+			}
+		})
+	}
+}
+
+func TestCmdLogsTail(t *testing.T) {
+	setupLogs := func(t *testing.T, id, content string) {
+		t.Helper()
+		restore := testDirs(t)
+		t.Cleanup(restore)
+		if err := os.MkdirAll(logDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(logDir, id+".log"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("no flag prints whole log", func(t *testing.T) {
+		setupLogs(t, "a1", "one\ntwo\nthree\n")
+		var rc int
+		out := captureStdout(t, func() { rc = cmdLogs([]string{"a1"}) })
+		if rc != 0 || out != "one\ntwo\nthree\n" {
+			t.Errorf("rc = %d, out = %q", rc, out)
+		}
+	})
+
+	t.Run("short log prints whole log unchanged", func(t *testing.T) {
+		setupLogs(t, "b2", "one\ntwo\n")
+		var rc int
+		out := captureStdout(t, func() { rc = cmdLogs([]string{"b2", "--tail", "40"}) })
+		if rc != 0 || out != "one\ntwo\n" {
+			t.Errorf("rc = %d, out = %q", rc, out)
+		}
+	})
+
+	t.Run("long log prints last n lines", func(t *testing.T) {
+		setupLogs(t, "c3", "one\ntwo\nthree\nfour\nfive\n")
+		var rc int
+		out := captureStdout(t, func() { rc = cmdLogs([]string{"c3", "--tail", "2"}) })
+		if rc != 0 || out != "four\nfive\n" {
+			t.Errorf("rc = %d, out = %q", rc, out)
+		}
+	})
+
+	t.Run("flag before id and equals form", func(t *testing.T) {
+		setupLogs(t, "d4", "one\ntwo\nthree\n")
+		var rc int
+		out := captureStdout(t, func() { rc = cmdLogs([]string{"--tail=2", "d4"}) })
+		if rc != 0 || out != "two\nthree\n" {
+			t.Errorf("rc = %d, out = %q", rc, out)
+		}
+	})
+
+	t.Run("invalid tail values", func(t *testing.T) {
+		setupLogs(t, "e5", "one\ntwo\nthree\n")
+		for _, args := range [][]string{
+			{"e5", "--tail", "abc"},
+			{"e5", "--tail", "0"},
+			{"e5", "--tail", "-3"},
+			{"e5", "--tail", "+2"},
+			{"e5", "--tail"},
+		} {
+			var rc int
+			out := captureStdout(t, func() { rc = cmdLogs(args) })
+			if rc != 2 {
+				t.Errorf("args %v: rc = %d, want 2", args, rc)
+			}
+			if out != "" {
+				t.Errorf("args %v: printed %q, want nothing", args, out)
+			}
+		}
+	})
+
+	t.Run("missing id", func(t *testing.T) {
+		setupLogs(t, "f6", "x\n")
+		if rc := cmdLogs([]string{}); rc != 2 {
+			t.Errorf("rc = %d, want 2", rc)
+		}
+		if rc := cmdLogs([]string{"--tail", "5"}); rc != 2 {
+			t.Errorf("flag-only: rc = %d, want 2", rc)
+		}
+	})
+
+	t.Run("missing log", func(t *testing.T) {
+		setupLogs(t, "g7", "x\n")
+		if rc := cmdLogs([]string{"nope"}); rc != 1 {
+			t.Errorf("rc = %d, want 1", rc)
+		}
+		if rc := cmdLogs([]string{"nope", "--tail", "5"}); rc != 1 {
+			t.Errorf("with tail: rc = %d, want 1", rc)
+		}
+	})
 }
