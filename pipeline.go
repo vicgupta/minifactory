@@ -157,9 +157,12 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-func failTask(t *Task, msg string) int {
+func failTask(t *Task, rec *RunRecord, msg string) int {
+	rec.Outcome = "failed"
+	rec.FailReason = firstLine(msg, 200)
+	rec.finish()
 	logf(t.ID, "FAILED: "+msg)
-	commentOnIssue(t, "minifactory: run failed \u2014 "+firstLine(msg, 200))
+	commentOnIssue(t, "minifactory: run failed — "+firstLine(msg, 200)+"\n"+rec.summaryLine())
 	setState(t.ID, "failed", "", "")
 	return 1
 }
@@ -266,6 +269,15 @@ func cmdRunOnce() int {
 	// leaves a stale lock whose PID is dead, which retry treats as reclaimable.
 	claimRun(tid)
 	defer releaseRun(tid)
+	// The run record is finalized and written on every exit path — success,
+	// failure, and split alike.
+	rec := newRunRecord(t)
+	defer func() {
+		rec.finish()
+		if err := rec.write(); err != nil {
+			logf(tid, "WARNING: run record write failed: %v", err)
+		}
+	}()
 	logf(tid, "picked up: %s <%s>", t.Title, t.RepoURL)
 	commentOnIssue(t, "minifactory: picked this up \u2014 working in branch `factory/"+tid+"`.")
 	labelIssueInProgress(t)
@@ -273,9 +285,11 @@ func cmdRunOnce() int {
 	workdir := filepath.Join(workDir, tid)
 	os.RemoveAll(workdir)
 	tracef("run-once: cloning %s", t.RepoURL)
+	rec.beginStage("clone")
 	if rc, out := runCmd(3*time.Minute, "", nil, "git", gitCloneArgs(t.RepoURL, workdir)...); rc != 0 {
-		return failTask(t, "clone failed\n"+tailStr(out, 2000))
+		return failTask(t, rec, "clone failed\n"+tailStr(out, 2000))
 	}
+	rec.endStage(true)
 	logf(tid, "cloned ok")
 
 	tj, _ := json.Marshal(map[string]string{"title": t.Title, "body": t.Body})
@@ -286,28 +300,34 @@ func cmdRunOnce() int {
 	// reports whether it handled the task; otherwise fall through to the
 	// main agent as before.
 	tracef("run-once: sizing pass (fit vs split)")
-	sv, serr := runSizer(t, workdir)
+	sv, sizerUsage, serr := runSizer(t, workdir, rec)
 	if serr != nil {
 		// Auth is dead: the main agent would fail identically, so fail
 		// fast instead of burning another call. Retrying can't help until
 		// the token is fixed.
-		return failTask(t, "sizer: "+serr.Error())
+		return failTask(t, rec, "sizer: "+serr.Error())
 	}
+	rec.setUsage(sizerUsage, nil)
+	checkOverBudget(rec, sizerUsage, "sizer")
 	if sv != nil {
-		if rc, done := splitTask(t, sv); done {
+		if rc, done := splitTask(t, rec, sv); done {
 			return rc
 		}
 		logf(tid, "sizer: split not possible — running main agent")
 	}
 
 	tracef("run-once: starting agent")
-	agent := runAgent(t) // logs everything; hard failures surface via result.json
+	ar := runAgent(t, rec) // logs everything; hard failures surface via result.json
 	tracef("run-once: agent finished")
+	rec.setUsage(nil, ar.usage)
+	rec.Sandboxed = ar.sandboxed
+	checkOverBudget(rec, ar.usage, "agent")
 
 	// Hygiene before verification: test runs and agents leave Python
 	// bytecode behind (__pycache__/, *.pyc), which would pollute the
 	// changed-files cross-check below. ensureGitignore may touch
 	// .gitignore; when it does, that file is excluded from the check.
+	rec.beginStage("validate")
 	cleanPythonCache(workdir)
 	gitignoreTouched := ensureGitignore(workdir)
 	logf(tid, "pre-commit hygiene: cleaned bytecode caches, ensured .gitignore")
@@ -327,7 +347,7 @@ func cmdRunOnce() int {
 		logf(tid, "result.json missing/invalid: %v", err)
 	}
 	if !valid {
-		return failTask(t, "validation failed — no PR opened")
+		return failTask(t, rec, "validation failed — no PR opened")
 	}
 	if s, ok := res["summary"].(string); ok {
 		logf(tid, "validation passed: %s", firstLine(s, 160))
@@ -338,16 +358,22 @@ func cmdRunOnce() int {
 	// fallback), so a dishonest handoff fails the task instead of opening
 	// a PR on it.
 	if !changedFilesMatch(workdir, res["changed_files"], gitignoreTouched) {
-		return failTask(t, "changed_files does not match git status — no PR opened")
+		return failTask(t, rec, "changed_files does not match git status — no PR opened")
 	}
 	logf(tid, "changed_files verified against git status")
+	rec.endStage(true)
 
 	// Trust boundary on the generated code: the agent's tests_passed claim
 	// is re-verified here, never trusted. The stub already ran its tests
 	// in-sandbox, so this is skipped for it.
 	tracef("run-once: running tests in sandbox")
-	if agent != "stub" && !runTestsInSandbox(t) {
-		return failTask(t, "sandbox test run failed — no PR opened")
+	if ar.name != "stub" {
+		rec.beginStage("sandbox_tests")
+		testsOK := runTestsInSandbox(t)
+		rec.endStage(testsOK)
+		if !testsOK {
+			return failTask(t, rec, "sandbox test run failed — no PR opened")
+		}
 	}
 
 	// Factory metadata stays out of the commit.
@@ -357,21 +383,23 @@ func cmdRunOnce() int {
 
 	branch := "factory/" + tid
 	tracef("run-once: committing and pushing branch %s", branch)
+	rec.beginStage("push")
 	if rc, out := runCmd(time.Minute, workdir, nil, "git", "checkout", "-b", branch); rc != 0 {
-		return failTask(t, "checkout -b failed\n"+tailStr(out, 1000))
+		return failTask(t, rec, "checkout -b failed\n"+tailStr(out, 1000))
 	}
 	if _, out := runCmd(time.Minute, workdir, nil, "git", "status", "--porcelain"); strings.TrimSpace(out) == "" {
-		return failTask(t, "agent made no changes")
+		return failTask(t, rec, "agent made no changes")
 	}
 	runCmd(time.Minute, workdir, nil, "git", "add", "-A")
 	if rc, out := runCmd(time.Minute, workdir, nil, "git",
 		"-c", "user.name=minifactory", "-c", "user.email=minifactory@localhost",
 		"commit", "-m", "factory: "+firstLine(t.Title, 72)); rc != 0 {
-		return failTask(t, "commit failed\n"+tailStr(out, 1000))
+		return failTask(t, rec, "commit failed\n"+tailStr(out, 1000))
 	}
 	if rc, out := gitPush(workdir, branch, t.RepoURL); rc != 0 {
-		return failTask(t, "push failed\n"+tailStr(out, 2000))
+		return failTask(t, rec, "push failed\n"+tailStr(out, 2000))
 	}
+	rec.endStage(true)
 	logf(tid, "pushed branch "+branch)
 
 	// The factory's work is complete: tests passed in the sandbox and the
@@ -379,9 +407,20 @@ func cmdRunOnce() int {
 	labelIssueCompleted(t)
 
 	tracef("run-once: creating PR from %s", branch)
-	prURL := createPR(t, branch)
+	rec.beginStage("pr")
+	labelIssueCompleted(t)
+	prURL := createPR(t, branch, rec)
+	rec.endStage(true)
+	rec.Outcome = "pr_open"
+	rec.PRURL = prURL
+	if cf, ok := res["changed_files"].([]any); ok {
+		rec.ChangedFiles = len(cf)
+	}
+	if s, ok := res["summary"].(string); ok {
+		rec.Summary = firstLine(s, 200)
+	}
 	if prURL != "" {
-		commentOnIssue(t, "minifactory: done \u2014 "+prURL+"\nTests passed in an isolated sandbox. Merge the PR to complete.")
+		commentOnIssue(t, "minifactory: done \u2014 "+prURL+"\nTests passed in an isolated sandbox. Merge the PR to complete.\n"+rec.summaryLine())
 		// PR is open and awaiting human review/merge.
 		labelIssueCreatedPR(t)
 	}
@@ -395,7 +434,7 @@ func cmdRunOnce() int {
 // picks it up as an independent factory task. Returns (rc, true) when the
 // task was handled, (0, false) when the split wasn't possible and the
 // caller should fall through to the main agent.
-func splitTask(t *Task, sv *sizeVerdict) (int, bool) {
+func splitTask(t *Task, rec *RunRecord, sv *sizeVerdict) (int, bool) {
 	tid := t.ID
 	org, repo, ok := parseGithubRepo(t.RepoURL)
 	if t.IssueNumber == 0 || githubToken == "" || !ok {
@@ -435,6 +474,7 @@ func splitTask(t *Task, sv *sizeVerdict) (int, bool) {
 		nums[i] = "#" + strconv.Itoa(n)
 	}
 	commentOnIssue(t, fmt.Sprintf("minifactory: too large for a single run (%s) — split into %d sub-tasks: %s.\nEach will be picked up as a separate factory task.", sv.Reason, len(children), strings.Join(nums, ", ")))
+	rec.Outcome = "split"
 	setState(tid, "split", "", "")
 	logf(tid, "state -> split (%d sub-issues: %s)", len(children), strings.Join(nums, ", "))
 	return 0, true
@@ -562,7 +602,7 @@ func requeueTask(t *Task) {
 // retryPRCreate re-attempts PR creation for a task whose branch was pushed
 // but whose PR create failed (pr_open with no URL). No agent re-run.
 func retryPRCreate(t *Task) int {
-	prURL := createPR(t, t.Branch)
+	prURL := createPR(t, t.Branch, nil)
 	if prURL == "" {
 		fmt.Fprintf(os.Stderr, "retry: PR creation failed again for %s; task left pr_open (see logs/%s.log)\n", t.ID, t.ID)
 		return 1
@@ -670,6 +710,13 @@ func cmdSync() int {
 	return 0
 }
 
+// taskListEntry is a Task plus its latest run-record stats, for list --json.
+type taskListEntry struct {
+	Task
+	LastDurationS *float64 `json:"last_duration_s,omitempty"`
+	LastCostUSD   *float64 `json:"last_cost_usd,omitempty"`
+}
+
 func cmdList(args []string) int {
 	tasks, err := listTasks()
 	if err != nil {
@@ -678,7 +725,21 @@ func cmdList(args []string) int {
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt < tasks[j].CreatedAt })
 	if hasFlag(args, "json") {
-		b, _ := json.MarshalIndent(tasks, "", " ")
+		entries := make([]taskListEntry, 0, len(tasks))
+		for _, t := range tasks {
+			e := taskListEntry{Task: t}
+			if recs, err := loadTaskRecords(t.ID); err == nil && len(recs) > 0 {
+				last := recs[len(recs)-1]
+				if last.FinishedAt != 0 {
+					e.LastDurationS = floatPtr(last.DurationS)
+				}
+				if last.Usage != nil && last.Usage.Total != nil && last.Usage.Total.CostUSD != nil {
+					e.LastCostUSD = last.Usage.Total.CostUSD
+				}
+			}
+			entries = append(entries, e)
+		}
+		b, _ := json.MarshalIndent(entries, "", " ")
 		fmt.Println(string(b))
 		return 0
 	}

@@ -30,24 +30,46 @@ func dockerBase(workdir string) []string {
 // worker image is unavailable the CLI falls back to the host with a
 // scrubbed environment and a loud warning: weaker isolation, but the
 // factory keeps working (e.g. macOS without docker).
-func runAgent(t *Task) string {
+// agentRun bundles what runAgent did, for the run record: the runner's
+// name, its parsed model usage (nil when the runner exposes none), and
+// whether it actually ran inside the disposable sandbox.
+type agentRun struct {
+	name      string
+	usage     *AgentUsage
+	sandboxed bool
+}
+
+func runAgent(t *Task, rec *RunRecord) agentRun {
 	workdir := filepath.Join(workDir, t.ID)
 	agent := selectAgent()
 	logf(t.ID, "agent selected: "+agent)
+	rec.beginStage("agent")
 	if agent == "stub" {
 		args := append(dockerBase(workdir), "/opt/stub_agent")
 		logf(t.ID, "sandbox: docker %s", strings.Join(args, " "))
 		rc, out := runCmd(sandboxTimeout, "", nil, "docker", args...)
 		logf(t.ID, "sandbox: exit=%d\n%s", rc, tailStr(out, 3000))
-		return agent
+		rec.endStage(rc == 0)
+		return agentRun{name: agent, usage: zeroUsage(), sandboxed: true}
 	}
 	if agentSandboxOK() {
-		runAgentSandboxed(t, workdir, agent)
-		return agent
+		out, ok, fellBack := runAgentSandboxed(t, workdir, agent)
+		rec.endStage(ok)
+		var usage *AgentUsage
+		if agent == "claude" {
+			// Parse the full stdout; only the tail goes to the log.
+			usage = parseClaudeUsage(out)
+		}
+		return agentRun{name: agent, usage: usage, sandboxed: !fellBack}
 	}
 	logf(t.ID, "agent %s: WARNING — sandbox unavailable (docker or worker image missing), running on host with scrubbed env", agent)
-	runCLI(t, workdir, agent)
-	return agent
+	out, ok := runCLI(t, workdir, agent)
+	rec.endStage(ok)
+	var usage *AgentUsage
+	if agent == "claude" {
+		usage = parseClaudeUsage(out)
+	}
+	return agentRun{name: agent, usage: usage, sandboxed: false}
 }
 
 // agentTokenEnv maps an agent runner to the environment variable its CLI
@@ -146,22 +168,25 @@ func sandboxInnerCommand(name string, maxTurns int) string {
 }
 
 // runAgentSandboxed runs a real agent CLI inside the disposable worker
-// sandbox and returns nothing — the outcome surfaces via result.json, as
-// with host runs. On a staging failure it falls back to the host path
-// rather than failing the task outright.
-func runAgentSandboxed(t *Task, workdir, name string) {
+// sandbox and returns its full stdout (for usage parsing), whether the
+// docker invocation itself succeeded, and whether it fell back to the host
+// path. The outcome surfaces via result.json, as with host runs. On a
+// staging failure it falls back to the host path rather than failing the
+// task outright.
+func runAgentSandboxed(t *Task, workdir, name string) (string, bool, bool) {
 	prompt := agentPrompt(t)
 	staging, err := writeAgentStaging(t.ID, agentTokenEnv(name)+"="+agentToken(name), prompt)
 	if err != nil {
 		logf(t.ID, "agent %s: staging failed (%v) — falling back to host", name, err)
-		runCLI(t, workdir, name)
-		return
+		out, ok := runCLI(t, workdir, name)
+		return out, ok, true
 	}
 	defer os.RemoveAll(staging)
 	args := append(sandboxDockerBase(workdir, staging), "bash", "-c", sandboxInnerCommand(name, maxTurns))
 	logf(t.ID, "agent %s: sandboxed run in %s (workdir-only mount, token-only env)", name, workerImage)
 	rc, out := runCmd(agentTimeout, "", nil, "docker", args...)
 	logf(t.ID, "agent %s: exit=%d\n%s", name, rc, tailStr(out, 3000))
+	return out, rc == 0, false
 }
 
 // detectTestCmd picks the repo's test command. A repo may declare its own

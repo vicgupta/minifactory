@@ -390,7 +390,8 @@ func commentOnIssue(t *Task, body string) {
 
 // createPR opens a pull request for branch. Returns the PR URL, or "" when
 // the remote isn't GitHub or no token is configured (branch is pushed anyway).
-func createPR(t *Task, branch string) string {
+// When the run record is flagged over budget, the PR body carries a warning.
+func createPR(t *Task, branch string, rec *RunRecord) string {
 	org, repo, ok := parseGithubRepo(t.RepoURL)
 	if !ok || githubToken == "" {
 		logf(t.ID, "WARNING: no GitHub remote/token — branch pushed, open PR manually")
@@ -408,6 +409,9 @@ func createPR(t *Task, branch string) string {
 		base = "main"
 	}
 	prBody := t.Body + "\n\n---\nBuilt by minifactory. Tests passed in an isolated sandbox."
+	if rec != nil && rec.OverBudget {
+		prBody += "\n\u26a0\ufe0f Over budget: this run's reported model cost exceeded MAX_COST_USD_PER_TASK."
+	}
 	if t.IssueNumber != 0 {
 		prBody += "\nCloses #" + strconv.Itoa(t.IssueNumber) + "."
 	}

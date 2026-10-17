@@ -571,6 +571,7 @@ func checkDirs() checkResult {
 		{"data", dataDir},
 		{"work", workDir},
 		{"logs", logDir},
+		{"runs", filepath.Join(dataDir, "runs")},
 	} {
 		if err := os.MkdirAll(d.path, 0755); err != nil {
 			status = statusFail
