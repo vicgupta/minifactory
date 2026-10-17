@@ -239,6 +239,12 @@ func usage() {
                                         (downloads the binary for this platform,
                                         verifies its checksum, smoke-tests it,
                                         then swaps it in — no Go toolchain needed)
+  delete-all [--dir path] [--user name] [--keep-user] [--force]
+                                        tear down a factory installation:
+                                        systemd units, crontab entry, the
+                                        nologin service user, and the dir's
+                                        managed state (prints a plan first;
+                                        --force executes)
   version                             print the factory version
 
   global flags:
@@ -353,6 +359,8 @@ func main() {
 		rc = cmdInstallCron(os.Args[2:])
 	case "update":
 		rc = cmdUpdate(os.Args[2:])
+	case "delete-all":
+		rc = cmdDeleteAll(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("minifactory " + version)
 	default:
