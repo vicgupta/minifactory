@@ -190,19 +190,38 @@ Rules:
 `, t.Title, body)
 }
 
+// agentCommand builds the host-side CLI invocation for an agent runner.
+// It is pure (no auth checks, no PATH lookup) so tests can pin the exact
+// flags each runner gets. Every runner must be fully non-interactive: no
+// permission prompts, no stdin reads, because nobody can answer them in a
+// factory run — a prompt is a hang until the agent timeout.
+func agentCommand(name, prompt string, maxTurns int) (cli, envKV string, args []string, ok bool) {
+	switch name {
+	case "claude":
+		return "claude", "CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken,
+			[]string{"-p", prompt, "--output-format", "json", "--max-turns", strconv.Itoa(maxTurns), "--dangerously-skip-permissions"}, true
+	case "codex":
+		return "codex", "OPENAI_API_KEY=" + codexToken,
+			[]string{"exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", prompt}, true
+	case "opencode":
+		return "opencode", "OPENCODE_API_KEY=" + opencodeToken,
+			[]string{"run", "--auto", prompt}, true
+	default:
+		return "", "", nil, false
+	}
+}
+
 // runCLI runs a vendor agent CLI ON THE HOST as trusted tooling (it needs
 // its token + model API access). The token is mapped to the CLI's own env
 // var and never enters a sandbox container. The CLI edits files only inside
 // the task workdir.
 func runCLI(t *Task, workdir, name string) bool {
-	var cli, envKV string
-	var args []string
 	prompt := agentPrompt(t)
-	switch name {
-	case "claude":
-		cli, envKV = "claude", "CLAUDE_CODE_OAUTH_TOKEN="+claudeToken
-		args = []string{"-p", prompt, "--output-format", "json", "--max-turns", strconv.Itoa(maxTurns), "--allowed-tools", "Write,Edit,Bash"}
-	case "codex":
+	cli, envKV, args, ok := agentCommand(name, prompt, maxTurns)
+	if !ok {
+		return false
+	}
+	if name == "codex" {
 		// codex ignores OPENAI_API_KEY unless the key is registered via
 		// `codex login`; ensureCodexLogin handles that (skipped when the
 		// stored key already matches). The env mapping stays as a fallback
@@ -211,13 +230,6 @@ func runCLI(t *Task, workdir, name string) bool {
 			logf(t.ID, "agent codex: not authenticated — check CODEX_TOKEN")
 			return false
 		}
-		cli, envKV = "codex", "OPENAI_API_KEY="+codexToken
-		args = []string{"exec", prompt}
-	case "opencode":
-		cli, envKV = "opencode", "OPENCODE_API_KEY="+opencodeToken
-		args = []string{"run", prompt}
-	default:
-		return false
 	}
 	if _, err := exec.LookPath(cli); err != nil {
 		logf(t.ID, "agent %s: `%s` not found on host PATH", name, cli)
