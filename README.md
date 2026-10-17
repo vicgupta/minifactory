@@ -44,6 +44,10 @@ cp minifactory ~/.local/bin/   # or /usr/local/bin
 
 Verify the download against `sha256sums.txt` from the same release.
 
+The binary may live in a protected directory (`/usr/local/bin`): no state
+is written beside it. Configuration and runtime state resolve as described
+under Configuration below — by default in `~/.minifactory/`.
+
 ## Update
 
 ```bash
@@ -58,8 +62,24 @@ then atomically swaps it in — keeping the previous binary as
 
 ## Configuration
 
-`<factory-dir>/.env` (mode 600) is the **only** env file. Copy
-`.env.example` (or run `minifactory init`) to create it. The knobs:
+The factory's `.env` (mode 600) is the **only** env file, and it is never
+looked for beside the binary. Its path — and with it the factory base
+directory holding `data/queue.json`, `logs/` and `work/` — resolves in
+this order:
+
+1. `MINIFACTORY_DIR` if set (the directory containing `.env`), otherwise
+   `MINIFACTORY_HOME` if set (the factory home replacing `~/.minifactory`).
+   `install-cron` and the systemd unit set `MINIFACTORY_DIR` explicitly.
+2. `./.env` in the current working directory, if that file exists — so a
+   VPS install/work dir that already has a `.env` keeps working unchanged.
+3. `~/.minifactory/.env` otherwise. When `HOME` is unset, resolution falls
+   back to `./.env` instead of failing.
+
+Copy `.env.example` (or run `minifactory init`) to create it.
+`minifactory init` with no `--dir` writes the `.env` at the resolved
+default (creating `~/.minifactory` with mode 0700 and the file with mode
+0600) and prints the exact path it wrote; `minifactory doctor` prints the
+resolved `.env` path it is using. The knobs:
 
 - `GITHUB_TOKEN` — required. Clone/push/open PRs on github.com. Without it,
   only local `file://` repos work and PRs must be opened manually.
@@ -89,9 +109,10 @@ so the pipeline stays exercisable end to end without any token.
 (`GITHUB_REPO=owner/repo` is an optional extra for `minifactory poll`, which
 enqueues open issues labeled `ready`.)
 
-Run `minifactory init` to create the runtime directories, reset `data/queue.json`
+Run `minifactory init` to create the runtime directories (in the resolved
+factory directory above, or in `--dir <path>` when given), reset `data/queue.json`
 (an existing queue is backed up to `data/queue.json.bak.<timestamp>` first),
-and write a fresh `.env` template in the factory's directory (an existing
+and write a fresh `.env` template in that directory, printing its exact path (an existing
 `.env` is backed up to `.env.bak.<timestamp>` first, never overwritten in
 place). As a safety guard, `init` refuses to run when the target dir already
 has a configured `.env` (any credential value set) or a non-empty queue —
@@ -164,7 +185,7 @@ scrubbed agent env — works the same.
 ## Operate
 
 ```bash
-cd /home/minifactory   # the factory dir (or ~/.minifactory for a rootless setup)
+cd /home/minifactory   # the factory dir (or ~/.minifactory, the default when no ./.env or override)
 ./minifactory issue --repo https://github.com/ORG/REPO.git --title "Fix X" --body "..."
 ./minifactory list
 ./minifactory logs <id>

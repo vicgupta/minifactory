@@ -87,7 +87,13 @@ func backupFile(src string, mode os.FileMode) (string, error) {
 func initFactory(dir string) int {
 	fmt.Printf("initializing minifactory in %s\n", dir)
 
-	for _, d := range []string{dir,
+	// The factory dir holds the secret-bearing .env, so a directory init
+	// creates is 0700; the runtime subdirs keep the historical 0755.
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "init: cannot create %s: %v\n", dir, err)
+		return 1
+	}
+	for _, d := range []string{
 		filepath.Join(dir, "data"),
 		filepath.Join(dir, "logs"),
 		filepath.Join(dir, "work")} {
@@ -132,7 +138,8 @@ func initFactory(dir string) int {
 	}
 	// Enforce 600 even if the file already existed with looser perms.
 	os.Chmod(envPath, 0600)
-	fmt.Println("  wrote fresh .env template (mode 600)")
+	fmt.Printf("  wrote fresh .env template (mode 600): %s\n", envPath)
+	fmt.Printf("  -> fill in %s, then run `minifactory doctor`\n", envPath)
 
 	// Reread the configuration and report status — values never printed.
 	cfg, _ := loadEnvFrom(dir)
@@ -213,8 +220,10 @@ func initWouldClobber(dir string) []string {
 }
 
 // cmdInit implements `minifactory init [--dir path] [--force]`. Without
-// --dir it initializes the factory's own directory (MINIFACTORY_DIR or the
-// binary's directory). Refusing to clobber live state without --force:
+// --dir it initializes the resolved factory directory (MINIFACTORY_DIR /
+// MINIFACTORY_HOME override, the cwd when it already has a .env, otherwise
+// ~/.minifactory — never the binary's directory; see resolveBaseDirWith).
+// Refusing to clobber live state without --force:
 // init rewrites .env and resets the queue, so a configured .env or a
 // non-empty queue aborts with exit 2 unless --force is given.
 func cmdInit(args []string) int {

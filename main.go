@@ -56,8 +56,9 @@ var (
 	sizerTimeout   = 8 * time.Minute
 
 	env           map[string]string
-	envFound      bool // .env was found and readable at startup
-	verboseLog    bool // --log: narrate every step on stdout
+	envFound      bool   // .env was found and readable at startup
+	envFile       string // resolved .env path used at startup
+	verboseLog    bool   // --log: narrate every step on stdout
 	githubToken   string
 	githubRepo    string // optional: owner/repo for `poll` issue intake
 	claudeToken   string
@@ -67,13 +68,69 @@ var (
 	maxTurns      = defaultMaxTurns // agent turn budget per task (MAX_TURNS)
 )
 
-// loadEnvFrom parses KEY=VALUE lines from dir/.env, skipping # comments
-// and blanks. The second return value reports whether the file was found
-// and readable — callers that need configuration must fail fast when it
+// fileExists reports whether path exists.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// resolveBaseDirWith decides the factory base directory — the directory
+// holding .env, data/queue.json, logs/ and work/ — without ever using the
+// executable's directory (which may be a protected system dir such as
+// /usr/local/bin). Precedence:
+//
+//  1. explicit override: MINIFACTORY_DIR, then MINIFACTORY_HOME
+//     (MINIFACTORY_HOME names the factory home that replaces ~/.minifactory)
+//  2. the current working directory, when it already contains a .env
+//     (backwards compatible with a VPS install/work dir)
+//  3. ~/.minifactory when a home directory is known
+//  4. the current working directory when HOME is unset (never crashes)
+func resolveBaseDirWith(cwd, home, dirOverride, homeOverride string, exists func(string) bool) string {
+	if dirOverride != "" {
+		return dirOverride
+	}
+	if homeOverride != "" {
+		return homeOverride
+	}
+	if cwd != "" && exists(filepath.Join(cwd, ".env")) {
+		return cwd
+	}
+	if home != "" {
+		return filepath.Join(home, ".minifactory")
+	}
+	if cwd != "" {
+		return cwd
+	}
+	return "."
+}
+
+// resolveEnvFileWith returns the .env path for the resolved base dir.
+func resolveEnvFileWith(cwd, home, dirOverride, homeOverride string, exists func(string) bool) string {
+	return filepath.Join(resolveBaseDirWith(cwd, home, dirOverride, homeOverride, exists), ".env")
+}
+
+// resolveBaseDir is resolveBaseDirWith against the real filesystem.
+func resolveBaseDir(cwd, home string) string {
+	return resolveBaseDirWith(cwd, home, os.Getenv("MINIFACTORY_DIR"), os.Getenv("MINIFACTORY_HOME"), fileExists)
+}
+
+// resolvedEnvPath returns the .env path in use: envFile when main has set
+// it, otherwise baseDir/.env (the fallback keeps tests that set baseDir
+// directly working).
+func resolvedEnvPath() string {
+	if envFile != "" {
+		return envFile
+	}
+	return filepath.Join(baseDir, ".env")
+}
+
+// loadEnvPath parses KEY=VALUE lines from path, skipping # comments and
+// blanks. The second return value reports whether the file was found and
+// readable — callers that need configuration must fail fast when it
 // isn't, instead of silently running with an empty env.
-func loadEnvFrom(dir string) (map[string]string, bool) {
+func loadEnvPath(path string) (map[string]string, bool) {
 	m := map[string]string{}
-	f, err := os.Open(filepath.Join(dir, ".env"))
+	f, err := os.Open(path)
 	if err != nil {
 		return m, false
 	}
@@ -95,9 +152,14 @@ func loadEnvFrom(dir string) (map[string]string, bool) {
 	return m, true
 }
 
-// loadEnv parses KEY=VALUE lines from the factory's own .env.
+// loadEnvFrom parses KEY=VALUE lines from dir/.env.
+func loadEnvFrom(dir string) (map[string]string, bool) {
+	return loadEnvPath(filepath.Join(dir, ".env"))
+}
+
+// loadEnv parses KEY=VALUE lines from the resolved .env file.
 func loadEnv() (map[string]string, bool) {
-	return loadEnvFrom(baseDir)
+	return loadEnvPath(resolvedEnvPath())
 }
 
 // runCmd runs a command with a timeout. Secrets must never appear in args.
@@ -260,7 +322,7 @@ func checkEnvFor(cmd string) error {
 	case "poll", "run-once", "sync":
 		if !envFound {
 			return fmt.Errorf("no .env found at %s; run `minifactory init` to create one",
-				filepath.Join(baseDir, ".env"))
+				resolvedEnvPath())
 		}
 	}
 	return nil
@@ -296,23 +358,25 @@ func tracef(format string, a ...any) {
 
 func main() {
 	os.Args, verboseLog = stripLogFlag(os.Args)
-	if exe, err := os.Executable(); err == nil {
-		baseDir = filepath.Dir(exe)
-	} else {
-		baseDir, _ = os.Getwd()
-	}
-	if d := os.Getenv("MINIFACTORY_DIR"); d != "" {
-		baseDir = d
-	}
+	// The factory base dir (and with it .env, data/queue.json, logs/ and
+	// work/) is never anchored to the executable's directory: a binary in
+	// /usr/local/bin or ~/.local/bin must not try to write state there.
+	// Precedence: MINIFACTORY_DIR / MINIFACTORY_HOME override, then the
+	// cwd when it already has a .env, then ~/.minifactory, then (when
+	// HOME is unset) the cwd. See resolveBaseDirWith.
+	cwd, _ := os.Getwd()
+	home, _ := os.UserHomeDir() // "" when HOME is unset; handled above
+	baseDir = resolveBaseDir(cwd, home)
+	envFile = filepath.Join(baseDir, ".env")
 	dataDir = filepath.Join(baseDir, "data")
 	workDir = filepath.Join(baseDir, "work")
 	logDir = filepath.Join(baseDir, "logs")
 
 	env, envFound = loadEnv()
 	if envFound {
-		tracef("config: .env loaded from %s", filepath.Join(baseDir, ".env"))
+		tracef("config: .env loaded from %s", resolvedEnvPath())
 	} else {
-		tracef("config: no .env at %s", filepath.Join(baseDir, ".env"))
+		tracef("config: no .env at %s", resolvedEnvPath())
 	}
 	githubToken = env["GITHUB_TOKEN"]
 	githubRepo = env["GITHUB_REPO"]

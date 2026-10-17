@@ -2,6 +2,7 @@
 # minifactory smoke test. Run as root on the VPS. Exits 0 on PASS, 1 on FAIL.
 set -u
 MF=/root/minifactory-go
+export MINIFACTORY_DIR="$MF"  # .env/queue/logs live in $MF, not beside the binary or in the demo cwd
 S=/tmp/minifactory-smoke
 rm -rf "$S"; mkdir -p "$S/demo"
 cd "$S/demo"

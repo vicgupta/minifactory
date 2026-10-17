@@ -128,15 +128,15 @@ func shortDur(d time.Duration) string {
 // ---- individual checks ------------------------------------------------
 
 func checkEnvFile() checkResult {
-	path := filepath.Join(baseDir, ".env")
+	path := resolvedEnvPath()
 	st, err := os.Stat(path)
 	if err != nil {
 		return checkResult{"config (.env)", statusFail,
-			"no .env in " + baseDir + " — run install.sh to create one"}
+			"no .env at " + path + " — run `minifactory init` to create one"}
 	}
 	mode := st.Mode().Perm()
 	var b strings.Builder
-	fmt.Fprintf(&b, ".env present, mode %o", mode)
+	fmt.Fprintf(&b, ".env at %s, present, mode %o", path, mode)
 	if mode != 0600 {
 		return checkResult{"config (.env)", statusWarn,
 			b.String() + "\n      secrets are world-readable; chmod 600 " + path}
