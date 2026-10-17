@@ -40,6 +40,7 @@ type fakeHost struct {
 	groups       []string
 	groupExists  bool
 	imagePresent bool
+	imageVersion string
 	failBuild    bool
 	outBuf       *bytes.Buffer
 }
@@ -55,7 +56,8 @@ func (f *fakeHost) inGroup(name string) bool {
 
 func newFakeHost(present ...string) *fakeHost {
 	f := &fakeHost{present: map[string]bool{}, installWorks: true, startWorks: true,
-		user: "vic", groups: []string{"vic"}, groupExists: true, imagePresent: true}
+		user: "vic", groups: []string{"vic"}, groupExists: true, imagePresent: true,
+		imageVersion: workerImageVersion}
 	for _, p := range present {
 		f.present[p] = true
 	}
@@ -92,7 +94,7 @@ func (f *fakeHost) env(goos string, euid int, osRelease string) depEnv {
 			}
 			return 2, ""
 		case name == "docker" && len(args) > 1 && args[0] == "image" && args[1] == "inspect" && f.imagePresent:
-			return 0, "sha256:fakeimageid123 123456789\n"
+			return 0, "sha256:fakeimageid123|123456789|" + f.imageVersion + "\n"
 		case name == "sg" && f.inGroup("docker"):
 			return 0, "Server Version: 99.0.0\n"
 		}
@@ -113,6 +115,7 @@ func (f *fakeHost) env(goos string, euid int, osRelease string) depEnv {
 				return 1, "fake build output\ndaemon exploded building image"
 			}
 			f.imagePresent = true
+			f.imageVersion = workerImageVersion
 		}
 		if strings.Contains(joined0, "groupadd docker") {
 			f.groupExists = true

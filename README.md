@@ -122,12 +122,15 @@ Configuration).
   re-running `usermod`. A merely stopped daemon is reported as
   daemon-not-running — group membership is not treated as a fix for it.
   With Docker usable as the user, `init` also ensures the worker image:
-  when `factory-worker-go` is missing (checked with
-  `docker image inspect`), it prints and runs
+  when `factory-worker-go` is missing or stale (checked with
+  `docker image inspect`; stale means its `minifactory.worker-version`
+  label does not match the version this binary expects — images built
+  before labelling, e.g. with Node 20, have no label and are rebuilt), it
+  prints and runs
   `docker build -t factory-worker-go <context>` using the worker context
   embedded in the binary (the repo's `worker/Dockerfile` + `worker/stub.go`,
   extracted to a temp dir — no source checkout is needed), streams the
-  build, then re-verifies with `docker image inspect`. An existing image
+  build, then re-verifies with `docker image inspect`. A current image
   is left alone (delete it or run that `docker build` command from a
   checkout by hand to force a rebuild; `--force` does not rebuild it).
   When Docker is unavailable, the daemon is down, or the session cannot
@@ -404,7 +407,10 @@ running version, so you can always tell which build is deployed.
 `doctor` sanity-checks token shapes (a stub where a real token belongs is a
 warning — this is what a dead credential looks like before it 401s), verifies
 the worker image carries the selected agent's CLI (a missing CLI fails the
-docker check, since the factory would silently fall back to host execution),
+docker check, since the factory would silently fall back to host execution)
+and is current (a stale `minifactory.worker-version` label fails the docker
+check: `worker image present but stale (built for older minifactory) -
+rebuild: minifactory init`),
 and `doctor --probe` spends one real API call verifying the selected agent's
 token is actually accepted. Without `--probe`, doctor stays fast and free:
 `--version` checks never authenticate.
@@ -466,8 +472,10 @@ for status comments and labels).
 - `cron.go` — the `install-cron` subcommand: per-user crontab management for rootless scheduling
 - `worker/stub.go` — deterministic stub agent, compiled into the worker image
 - `worker/Dockerfile` — multi-stage: builds the stub, ships it in the
-  python:3.12-slim + git + node + pytest toolchain image (`factory-worker-go`),
-  plus the vendor agent CLIs (claude, codex, opencode) for sandboxed runs
+  python:3.12-slim + git + Node 24 (NodeSource `setup_24.x`; Claude Code
+  requires Node >=22) + pytest toolchain image (`factory-worker-go`,
+  labelled `minifactory.worker-version`), plus the vendor agent CLIs
+  (claude, codex, opencode) for sandboxed runs
 
 ## What's deliberately missing
 

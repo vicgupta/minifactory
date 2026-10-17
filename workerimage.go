@@ -6,13 +6,16 @@ package main
 //   docker build -q -t factory-worker-go "$APP_DIR/worker/"
 // A released binary is installed alone in ~/.local/bin with no checkout
 // beside it, so init cannot rely on finding worker/ on disk. The worker
-// context is tiny (Dockerfile 810B + stub.go 2.5KB, checked in the repo),
-// so it is embedded in the binary and extracted to a temp dir at build
-// time. Init builds only when the image is missing; an existing image is
-// never rebuilt or pulled.
+// context is tiny (Dockerfile + stub.go, checked in the repo), so it is
+// embedded in the binary and extracted to a temp dir at build time. Init
+// builds when the image is missing or stale (its
+// minifactory.worker-version label does not match workerImageVersion
+// below; pre-label images have no label and so are always stale). A
+// current image is never rebuilt or pulled.
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +26,29 @@ import (
 
 //go:embed worker/Dockerfile worker/stub.go
 var workerContextFS embed.FS
+
+// workerImageLabel stamps every worker image built from worker/Dockerfile.
+// workerImageVersion is the version this binary expects: bump it (and the
+// LABEL in worker/Dockerfile, in the same change) whenever the Dockerfile
+// changes, so existing installs rebuild a stale image on `init` instead of
+// silently keeping e.g. an image with too-old Node. Old images built
+// before labelling have no label (""), which never matches.
+const workerImageLabel = "minifactory.worker-version"
+const workerImageVersion = "1"
+
+// workerImageVersionStale reports whether an image carrying version v
+// should be rebuilt by this binary.
+func workerImageVersionStale(v string) bool { return v != workerImageVersion }
+
+// parseWorkerImageLabelsJSON extracts workerImageVersion from the
+// `{{json .Config.Labels}}` output of `docker image inspect`.
+func parseWorkerImageLabelsJSON(out string) string {
+	var labels map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &labels); err != nil {
+		return ""
+	}
+	return labels[workerImageLabel]
+}
 
 // extractWorkerContext writes the embedded worker/ context to a fresh temp
 // dir and returns it plus a cleanup func. This is the default depEnv
@@ -47,24 +73,51 @@ func extractWorkerContext() (string, func(), error) {
 	return dir, cleanup, nil
 }
 
-// probeWorkerImage reports the image's id/size when present as the user.
-func probeWorkerImage(env depEnv) (string, bool) {
-	rc, out := env.run(15*time.Second, "docker", "image", "inspect", workerImage,
-		"--format", "{{.Id}} {{.Size}}")
-	if rc != 0 {
-		return "", false
+type workerImageInfo struct {
+	detail  string
+	version string
+}
+
+// parseWorkerImageInspect parses the pipe-separated
+// `{{.Id}}|{{.Size}}|<worker-version>` inspect output. A missing label
+// renders as "" (older Docker) or "<no value>", both meaning stale.
+func parseWorkerImageInspect(out string) (workerImageInfo, bool) {
+	parts := strings.Split(strings.TrimSpace(out), "|")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return workerImageInfo{}, false
 	}
-	parts := strings.Fields(strings.TrimSpace(out))
-	if len(parts) == 0 {
-		return workerImage, true
-	}
-	detail := workerImage + " (" + parts[0]
+	info := workerImageInfo{detail: workerImage + " (" + strings.TrimSpace(parts[0])}
 	if len(parts) >= 2 {
-		if n, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
-			detail += ", " + humanBytes(n)
+		if n, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64); err == nil {
+			info.detail += ", " + humanBytes(n)
 		}
 	}
-	return detail + ")", true
+	if len(parts) >= 3 {
+		if v := strings.TrimSpace(parts[2]); v != "<no value>" {
+			info.version = v
+		}
+	}
+	info.detail += ")"
+	return info, true
+}
+
+// probeWorkerImageInfo reports the image's id/size/version when present.
+func probeWorkerImageInfo(env depEnv) (workerImageInfo, bool) {
+	rc, out := env.run(15*time.Second, "docker", "image", "inspect", workerImage,
+		"--format", "{{.Id}}|{{.Size}}|{{index .Config.Labels \""+workerImageLabel+"\"}}")
+	if rc != 0 {
+		return workerImageInfo{}, false
+	}
+	return parseWorkerImageInspect(out)
+}
+
+// probeWorkerImage reports the image's id/size when present as the user.
+func probeWorkerImage(env depEnv) (string, bool) {
+	info, ok := probeWorkerImageInfo(env)
+	if !ok {
+		return "", false
+	}
+	return info.detail, true
 }
 
 func lastNonEmptyLine(s string) string {
@@ -77,7 +130,7 @@ func lastNonEmptyLine(s string) string {
 	return ""
 }
 
-// ensureWorkerImage builds factory-worker-go when it is missing. It runs
+// ensureWorkerImage builds factory-worker-go when it is missing or stale. It runs
 // only when docker is usable as the invoking user right now; every other
 // docker outcome (missing, daemon down, group/stale-session) skips with a
 // one-line reason. Warn-and-continue: a failed build never fails init.
@@ -102,11 +155,15 @@ func (c *depChecker) ensureWorkerImage() depStatus {
 		c.printf("  worker image: skipped (docker daemon not running)")
 		return depStatus{tool, depSkipped, "skipped (docker daemon not running)"}
 	}
-	if detail, present := probeWorkerImage(c.env); present {
-		return depStatus{tool, depPresent, detail}
+	stale, staleVersion := false, ""
+	if info, present := probeWorkerImageInfo(c.env); present {
+		if !workerImageVersionStale(info.version) {
+			return depStatus{tool, depPresent, info.detail}
+		}
+		stale, staleVersion = true, info.version
 	}
-	// Missing: extract the embedded context and build, printing the exact
-	// command first and streaming output like the other init commands.
+	// Missing or stale: extract the embedded context and build, printing
+	// the exact command first and streaming output like other init commands.
 	ctxDir, cleanup, err := c.env.workerContext()
 	if err != nil {
 		c.printf("  warning: cannot prepare the embedded worker build context: %v", err)
@@ -114,7 +171,11 @@ func (c *depChecker) ensureWorkerImage() depStatus {
 	}
 	defer cleanup()
 	cmd := []string{"docker", "build", "-t", workerImage, ctxDir}
-	c.printf("  worker image: %s missing — building from the embedded worker context", workerImage)
+	if stale {
+		c.printf("  worker image: %s present but stale (worker-version %q, want %q) — rebuilding from the embedded worker context", workerImage, staleVersion, workerImageVersion)
+	} else {
+		c.printf("  worker image: %s missing — building from the embedded worker context", workerImage)
+	}
 	c.printf("  $ %s", strings.Join(cmd, " "))
 	rc, out := c.env.runInstall(cmd[0], cmd[1:]...)
 	if rc != 0 {
@@ -127,8 +188,15 @@ func (c *depChecker) ensureWorkerImage() depStatus {
 		c.printf("  re-run `minifactory init`, or from a repo checkout: %s", rerun)
 		return depStatus{tool, depBuildFailed, fmt.Sprintf("%s; re-run `minifactory init` or `%s` from a repo checkout", last, rerun)}
 	}
-	if detail, present := probeWorkerImage(c.env); present {
-		return depStatus{tool, depBuilt, detail}
+	if info, present := probeWorkerImageInfo(c.env); present {
+		if workerImageVersionStale(info.version) {
+			c.printf("  warning: worker image build reported success but its worker-version is %q, want %q", info.version, workerImageVersion)
+			return depStatus{tool, depBuildFailed, fmt.Sprintf("build ran but worker image version is %q, want %q; re-run `minifactory init` or `docker build -t "+workerImage+" worker/` from a repo checkout", info.version, workerImageVersion)}
+		}
+		if stale {
+			return depStatus{tool, depBuilt, "rebuilt stale worker image: " + info.detail}
+		}
+		return depStatus{tool, depBuilt, info.detail}
 	}
 	c.printf("  warning: worker image build reported success but `docker image inspect %s` still fails", workerImage)
 	return depStatus{tool, depBuildFailed, "build ran but image still not present; re-run `minifactory init` or `docker build -t " + workerImage + " worker/` from a repo checkout"}

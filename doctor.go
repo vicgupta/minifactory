@@ -415,6 +415,20 @@ func checkDocker() checkResult {
 		}
 	}
 	lines = append(lines, "worker image \""+workerImage+"\": present (created "+created+", "+size+")")
+	// Staleness: images built by an older minifactory carry an old (or no)
+	// minifactory.worker-version label. Report it like a missing image.
+	rc, out = runCmd(15*time.Second, "", nil, "docker", "image", "inspect", workerImage,
+		"--format", "{{json .Config.Labels}}")
+	imgVersion := ""
+	if rc == 0 {
+		imgVersion = parseWorkerImageLabelsJSON(out)
+	}
+	if workerImageVersionStale(imgVersion) {
+		return checkResult{"docker", statusFail,
+			strings.Join(lines, "\n      ") + "\n      worker image present but stale (built for older minifactory) - rebuild: minifactory init" +
+				fmt.Sprintf(" (worker-version %q, want %q)", imgVersion, workerImageVersion)}
+	}
+	lines = append(lines, "worker image version: "+imgVersion+" (current)")
 	// Sandboxed agent runs need the vendor CLIs inside the worker image.
 	// A missing CLI for the selected agent is a hard fail: the factory
 	// would silently fall back to weaker host execution.
