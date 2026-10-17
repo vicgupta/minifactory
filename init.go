@@ -91,7 +91,8 @@ func backupFile(src string, mode os.FileMode) (string, error) {
 // It returns 0 on success, 1 on filesystem errors. A template with empty
 // values is not an error: the user fills it in afterwards. Missing git or
 // Docker is likewise not an error: on Linux init installs them (see
-// deps.go, skipped with --skip-deps), elsewhere it instructs, and either
+// deps.go, skipped with --skip-deps — that flag also skips the docker-group
+// and worker-image steps, which belong to the deps step), elsewhere it instructs, and either
 // way the outcome is reported in the dependency summary. PATH/profile
 // enablement (installpath.go, skipped only with --skip-path) likewise
 // warns and continues, reported as the path summary line.

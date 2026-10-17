@@ -107,6 +107,38 @@ Configuration).
   An undetectable distro gets a manual-install message rather than a guess.
   Missing tools never fail `init` — they are reported as outstanding in its
   dependency summary. Pass `init --skip-deps` to skip the check entirely.
+  On Linux, after Docker is present and its daemon has been probed *as the
+  invoking user*, `init` also ensures that user can use Docker without
+  sudo: when the probe fails with permission denied on
+  `/var/run/docker.sock`, it prints and runs
+  `sudo usermod -aG docker <user>` (creating the `docker` group first with
+  `sudo groupadd docker` only when a fresh install left it absent), then
+  verifies with `id -nG <user>` (and, when available, an
+  `sg docker -c "docker version"` probe). Root needs no group and is
+  skipped. A group change cannot take effect in your already-running
+  shell, so the summary then says to log out and back in, or run
+  `newgrp docker`, before `docker ps` will work without sudo; if you were
+  already in the group, it reports that stale-session case instead of
+  re-running `usermod`. A merely stopped daemon is reported as
+  daemon-not-running — group membership is not treated as a fix for it.
+  With Docker usable as the user, `init` also ensures the worker image:
+  when `factory-worker-go` is missing (checked with
+  `docker image inspect`), it prints and runs
+  `docker build -t factory-worker-go <context>` using the worker context
+  embedded in the binary (the repo's `worker/Dockerfile` + `worker/stub.go`,
+  extracted to a temp dir — no source checkout is needed), streams the
+  build, then re-verifies with `docker image inspect`. An existing image
+  is left alone (delete it or run that `docker build` command from a
+  checkout by hand to force a rebuild; `--force` does not rebuild it).
+  When Docker is unavailable, the daemon is down, or the session cannot
+  use Docker yet (e.g. right after a group add), the image step is
+  skipped with that reason, and a failed build warns and continues.
+  The dependency summary reports `docker:` as ready (usable now) /
+  group membership added / stale session / still not usable, and a
+  `worker image:` line as present / built / build failed / skipped.
+  All of this belongs to the deps step: `init --skip-deps` (also what
+  `MINIFACTORY_SKIP_DEPS=1` maps to in `install.sh`) skips the git/docker
+  check, the docker-group step, and the worker-image build together.
 - `minifactory init` also enables PATH for the directory the running
   binary lives in (normally `~/.local/bin`, or the `BIN_DIR` override):
   it prepends that directory to its own process PATH (so the rest of
@@ -238,7 +270,9 @@ using the pre-existing configuration. `init --dir <path>` sets up a
 brand-new factory directory elsewhere. Finally, `init` checks for git and
 Docker and, on Linux, installs whichever is missing (see Requirements
 above; `--skip-deps` opts out), ending with a dependency summary reporting
-each tool as ok / installed / still missing, with versions, plus a
+each tool as ok / installed / still missing, with versions — plus, on
+Linux, the docker-group outcome and a `worker image:` line (present /
+built / build failed / skipped) — plus a
 `path:` summary line for the PATH/profile step above (`--skip-path`
 opts out of that step only).
 

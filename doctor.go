@@ -371,6 +371,23 @@ func checkGitHub() checkResult {
 	return checkResult{"github api", status, strings.Join(lines, "\n      ")}
 }
 
+// dockerDaemonFailure classifies a failed daemon probe for doctor. A
+// permission-denied socket failure is not a daemon-down problem: the daemon
+// is running, the invoking user just isn't in the `docker` group (or this
+// session predates being added). It gets the same remedy wording init uses.
+func dockerDaemonFailure(out, username string) checkResult {
+	if isDockerPermissionDenied(out) {
+		if username == "" {
+			username = "<user>"
+		}
+		return checkResult{"docker", statusFail,
+			"daemon running but not usable without sudo: permission denied on /var/run/docker.sock for " + username +
+				" (" + strings.TrimSpace(firstLine(out, 200)) + ")\n      -> " + dockerGroupRemedy(username)}
+	}
+	return checkResult{"docker", statusFail,
+		"daemon unreachable: " + strings.TrimSpace(firstLine(out, 200))}
+}
+
 func checkDocker() checkResult {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return checkResult{"docker", statusFail, "docker CLI not on PATH"}
@@ -378,15 +395,14 @@ func checkDocker() checkResult {
 	var lines []string
 	rc, out := runCmd(15*time.Second, "", nil, "docker", "version", "--format", "{{.Server.Version}}")
 	if rc != 0 {
-		return checkResult{"docker", statusFail,
-			"daemon unreachable: " + strings.TrimSpace(firstLine(out, 200))}
+		return dockerDaemonFailure(out, currentUsername())
 	}
 	lines = append(lines, "daemon: reachable, server version "+strings.TrimSpace(out))
 	rc, out = runCmd(15*time.Second, "", nil, "docker", "image", "inspect", workerImage,
 		"--format", "{{.Created}} {{.Size}}")
 	if rc != 0 {
 		return checkResult{"docker", statusFail,
-			strings.Join(lines, "\n      ") + "\n      worker image \"" + workerImage + "\" MISSING — build it (install.sh does this)"}
+			strings.Join(lines, "\n      ") + "\n      worker image \"" + workerImage + "\" MISSING — build it (`minifactory init` builds it; or `docker build -t " + workerImage + " worker/` from a repo checkout, as install.sh does)"}
 	}
 	parts := strings.Fields(strings.TrimSpace(out))
 	created, size := "?", "?"

@@ -140,3 +140,25 @@ func TestExitFor(t *testing.T) {
 		t.Error("any fail should exit 1")
 	}
 }
+
+func TestDockerDaemonFailurePermissionDeniedWording(t *testing.T) {
+	r := dockerDaemonFailure("permission denied while trying to connect to the docker API at unix:///var/run/docker.sock", "vic")
+	if r.Status != statusFail {
+		t.Fatalf("status = %s, want fail", r.Status)
+	}
+	for _, want := range []string{"permission denied on /var/run/docker.sock", "sudo usermod -aG docker vic", "log out and back in", "`newgrp docker`"} {
+		if !strings.Contains(r.Detail, want) {
+			t.Errorf("detail %q missing %q", r.Detail, want)
+		}
+	}
+	if strings.Contains(r.Detail, "daemon unreachable:") {
+		t.Errorf("permission-denied mislabeled as generic daemon unreachable: %q", r.Detail)
+	}
+}
+
+func TestDockerDaemonFailureGenericUnreachable(t *testing.T) {
+	r := dockerDaemonFailure("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?", "vic")
+	if !strings.Contains(r.Detail, "daemon unreachable:") || strings.Contains(r.Detail, "usermod") {
+		t.Errorf("generic failure should stay daemon-unreachable without group remedy: %q", r.Detail)
+	}
+}

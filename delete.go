@@ -125,9 +125,15 @@ func writeUserCrontab(u, content string) error {
 
 func currentUsername() string {
 	if u, err := user.Current(); err == nil {
-		return u.Username
+		name := strings.TrimSpace(u.Username)
+		if i := strings.LastIndex(name, `\`); i >= 0 { // domain\user form
+			name = name[i+1:]
+		}
+		if name != "" {
+			return name
+		}
 	}
-	return ""
+	return strings.TrimSpace(os.Getenv("USER"))
 }
 
 // deletePlan is what `minifactory delete-all` will tear down.

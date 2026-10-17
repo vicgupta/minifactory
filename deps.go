@@ -26,10 +26,18 @@ import (
 type depState string
 
 const (
-	depOK        depState = "ok"
-	depInstalled depState = "installed"
-	depMissing   depState = "still missing"
-	depNoDaemon  depState = "daemon not running"
+	depOK          depState = "ok"
+	depInstalled   depState = "installed"
+	depMissing     depState = "still missing"
+	depNoDaemon    depState = "daemon not running"
+	depReady       depState = "ready (usable now)"
+	depGroupAdded  depState = "group membership added"
+	depGroupStale  depState = "group membership set, stale session"
+	depNotUsable   depState = "still not usable"
+	depPresent     depState = "present"
+	depBuilt       depState = "built"
+	depBuildFailed depState = "build failed"
+	depSkipped     depState = "skipped"
 )
 
 type depStatus struct {
@@ -40,7 +48,8 @@ type depStatus struct {
 
 // outstanding reports whether the tool still needs user action.
 func (s depStatus) outstanding() bool {
-	return s.State == depMissing || s.State == depNoDaemon
+	return s.State == depMissing || s.State == depNoDaemon || s.State == depGroupAdded ||
+		s.State == depGroupStale || s.State == depNotUsable || s.State == depBuildFailed
 }
 
 // depEnv is the seam between dependency logic and the host, so tests can
@@ -55,7 +64,11 @@ type depEnv struct {
 	runInstall func(name string, args ...string) (int, string)
 	readFile   func(string) ([]byte, error)
 	euid       int
-	out        io.Writer
+	username   func() string
+	// workerContext prepares the worker build context (embedded in the
+	// binary by default) and returns its dir plus a cleanup func.
+	workerContext func() (string, func(), error)
+	out           io.Writer
 }
 
 func defaultDepEnv() depEnv {
@@ -86,9 +99,11 @@ func defaultDepEnv() depEnv {
 			}
 			return 0, buf.String()
 		},
-		readFile: os.ReadFile,
-		euid:     os.Geteuid(),
-		out:      out,
+		readFile:      os.ReadFile,
+		euid:          os.Geteuid(),
+		username:      currentUsername,
+		workerContext: extractWorkerContext,
+		out:           out,
 	}
 }
 
@@ -275,8 +290,100 @@ func probeDockerCLI(env depEnv) (string, bool) {
 }
 
 func probeDockerDaemon(env depEnv) bool {
-	rc, _ := env.run(15*time.Second, "docker", "info")
-	return rc == 0
+	kind, _ := probeDockerDaemonDetail(env)
+	return kind == dockerProbeReachable
+}
+
+func (env depEnv) usernameOr(fallback string) string {
+	if env.username != nil {
+		if name := strings.TrimSpace(env.username()); name != "" {
+			return name
+		}
+	}
+	if name := currentUsername(); name != "" {
+		return name
+	}
+	return fallback
+}
+
+// dockerManualUsermod is the exact command that fixes docker-group
+// membership by hand.
+func dockerManualUsermod(username string) string {
+	if username == "" {
+		username = "<user>"
+	}
+	return "sudo usermod -aG docker " + username
+}
+
+// dockerGroupRemedy is the shared remedy wording used by init and doctor
+// for the permission-denied-on-the-socket case.
+func dockerGroupRemedy(username string) string {
+	if username == "" {
+		username = "<user>"
+	}
+	return "ensure " + username + " is in the `docker` group (`" + dockerManualUsermod(username) +
+		"`), then log out and back in, or run `newgrp docker`, before `docker ps` will work without sudo"
+}
+
+func isDockerPermissionDenied(out string) bool {
+	low := strings.ToLower(out)
+	return strings.Contains(low, "permission denied") &&
+		(strings.Contains(low, "docker.sock") || strings.Contains(low, "docker api") ||
+			strings.Contains(low, "connect to the docker"))
+}
+
+type dockerProbeKind int
+
+const (
+	dockerProbeReachable dockerProbeKind = iota
+	dockerProbePermissionDenied
+	dockerProbeUnreachable
+)
+
+// probeDockerDaemonDetail runs the same daemon probe doctor uses
+// (`docker info` as the invoking user) and classifies the failure:
+// permission-denied on the socket is a group-membership problem, while
+// connection-refused / no-such-file means the daemon is simply not running.
+func probeDockerDaemonDetail(env depEnv) (dockerProbeKind, string) {
+	rc, out := env.run(15*time.Second, "docker", "info")
+	if rc == 0 {
+		return dockerProbeReachable, out
+	}
+	if isDockerPermissionDenied(out) {
+		return dockerProbePermissionDenied, out
+	}
+	return dockerProbeUnreachable, out
+}
+
+func dockerUserGroups(env depEnv, username string) ([]string, bool) {
+	rc, out := env.run(10*time.Second, "id", "-nG", username)
+	if rc != 0 {
+		return nil, false
+	}
+	return strings.Fields(out), true
+}
+
+func hasGroup(groups []string, name string) bool {
+	for _, g := range groups {
+		if g == name {
+			return true
+		}
+	}
+	return false
+}
+
+// dockerGroupExists reports whether the `docker` group exists, and whether
+// that could be determined at all (`getent group docker`: exit 2 = absent).
+func dockerGroupExists(env depEnv) (exists, determinable bool) {
+	rc, _ := env.run(10*time.Second, "getent", "group", "docker")
+	switch rc {
+	case 0:
+		return true, true
+	case 2:
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // tryStartDocker attempts systemctl, then the service fallback, on Linux.
@@ -311,6 +418,127 @@ func (c *depChecker) tryStartDocker() bool {
 	return probeDockerDaemon(c.env)
 }
 
+// verifyDockerGroupViaSG proves freshly-granted membership works by running
+// the daemon probe under `sg docker`. This only verifies; it does not (and
+// must not silently) re-exec init or change the user's login shell. Returns
+// "" when sg is unavailable or the probe does not pass.
+func (c *depChecker) verifyDockerGroupViaSG() string {
+	if _, err := c.env.lookPath("sg"); err != nil {
+		return ""
+	}
+	c.printf("  $ sg docker -c \"docker version\"")
+	rc, _ := c.env.run(15*time.Second, "sg", "docker", "-c", "docker version")
+	if rc != 0 {
+		c.printf("  docker: `sg docker` verification did not pass — not claiming daemon access works in this session")
+		return ""
+	}
+	return "; verified with `sg docker -c \"docker version\"` (a fresh login session or `newgrp docker` is still needed in your current shell)"
+}
+
+// dockerGroupNote describes group status for the daemon-not-running case,
+// without conflating it with the daemon problem or changing membership.
+func (c *depChecker) dockerGroupNote() string {
+	if c.env.goos != "linux" || c.env.euid == 0 {
+		return ""
+	}
+	username := c.env.usernameOr("")
+	if username == "" {
+		return ""
+	}
+	groups, ok := dockerUserGroups(c.env, username)
+	if !ok {
+		return ""
+	}
+	if hasGroup(groups, "docker") {
+		return "; " + username + " is already in the `docker` group"
+	}
+	return "; " + username + " is not in the `docker` group — once the daemon is running, run `" +
+		dockerManualUsermod(username) + "`, then log out and back in, or run `newgrp docker`"
+}
+
+// ensureDockerGroup handles the Linux permission-denied-on-the-socket case:
+// the daemon is running, but the invoking user cannot talk to it without
+// sudo. It manages `docker` group membership (groupadd only right after a
+// fresh install when the group is truly absent, then usermod), prints every
+// privileged command before running it, and never claims the current shell
+// can use docker afterwards — group changes only take effect in a new login
+// session or via `newgrp docker`.
+func (c *depChecker) ensureDockerGroup(ver string, justInstalled bool) depStatus {
+	prefix := ""
+	if ver != "" {
+		prefix = ver + "; "
+	}
+	if c.env.euid == 0 {
+		c.printf("  docker: running as root — root needs no `docker` group membership; skipping docker-group step")
+		return depStatus{"docker", depNotUsable, prefix +
+			"running as root — root needs no `docker` group membership (docker-group step skipped); daemon probe still failed with permission denied — check /var/run/docker.sock"}
+	}
+	username := c.env.usernameOr("")
+	if username == "" {
+		c.printf("  docker: cannot determine the invoking username — run `%s` manually", dockerManualUsermod(""))
+		return depStatus{"docker", depNotUsable, prefix +
+			"cannot determine the invoking username; run `" + dockerManualUsermod("") + "`"}
+	}
+	manual := dockerManualUsermod(username)
+	if exists, determinable := dockerGroupExists(c.env); determinable && !exists {
+		if !justInstalled {
+			c.printf("  docker: the `docker` group does not exist — run `sudo groupadd docker` and then `%s`", manual)
+			return depStatus{"docker", depNotUsable, prefix +
+				"the `docker` group does not exist; run: sudo groupadd docker && " + manual}
+		}
+		if !c.plan.sudoOK {
+			c.printf("  $ sudo groupadd docker")
+			c.printf("  $ %s", manual)
+			c.printf("  docker: sudo unavailable — run the commands above to create the group and add %s to it", username)
+			return depStatus{"docker", depNotUsable, prefix +
+				"the `docker` group does not exist and sudo is unavailable; run: sudo groupadd docker && " + manual}
+		}
+		c.printf("  docker: the `docker` group does not exist after installing docker — creating it")
+		if rc := c.runPrinted(c.plan.full([]string{"groupadd", "docker"})); rc != 0 {
+			c.printf("  warning: groupadd docker exited %d; run `sudo groupadd docker` and then `%s` manually", rc, manual)
+			return depStatus{"docker", depNotUsable, prefix +
+				fmt.Sprintf("groupadd docker failed (exit %d); run: sudo groupadd docker && %s", rc, manual)}
+		}
+	}
+	groups, ok := dockerUserGroups(c.env, username)
+	if !ok {
+		c.printf("  docker: cannot read groups for %s (`id -nG %s` failed) — run `%s` manually if needed", username, username, manual)
+		return depStatus{"docker", depNotUsable, prefix +
+			"cannot determine group membership for " + username + "; run `" + manual + "`"}
+	}
+	if hasGroup(groups, "docker") {
+		// Stale session: membership is already set, re-running usermod
+		// would be pointless — this login session predates the grant.
+		detail := prefix + "membership is set for " + username +
+			" but this session doesn't have it yet — log out and back in, or run `newgrp docker`, before `docker ps` will work without sudo" +
+			c.verifyDockerGroupViaSG()
+		c.printf("  docker: %s is already in the `docker` group, but this session predates that — not re-running usermod", username)
+		return depStatus{"docker", depGroupStale, detail}
+	}
+	if !c.plan.sudoOK {
+		c.printf("  $ %s", manual)
+		c.printf("  docker: sudo unavailable — run the command above to add %s to the `docker` group", username)
+		return depStatus{"docker", depNotUsable, prefix +
+			"sudo is unavailable; run `" + manual + "`, then log out and back in, or run `newgrp docker`"}
+	}
+	c.printf("  docker: %s is not in the `docker` group — adding (daemon probe failed with permission denied on /var/run/docker.sock)", username)
+	if rc := c.runPrinted(c.plan.full([]string{"usermod", "-aG", "docker", username})); rc != 0 {
+		c.printf("  warning: usermod exited %d; run `%s` manually", rc, manual)
+		return depStatus{"docker", depNotUsable, prefix +
+			fmt.Sprintf("usermod failed (exit %d); run `%s`, then log out and back in, or run `newgrp docker`", rc, manual)}
+	}
+	groups, ok = dockerUserGroups(c.env, username)
+	if !ok || !hasGroup(groups, "docker") {
+		c.printf("  warning: `id -nG %s` still does not show the `docker` group after usermod — run `%s` manually", username, manual)
+		return depStatus{"docker", depNotUsable, prefix +
+			"usermod ran but `id -nG " + username + "` does not show the `docker` group; run `" + manual + "`"}
+	}
+	detail := prefix + "for " + username +
+		" — log out and back in, or run `newgrp docker`, before `docker ps` will work without sudo" +
+		c.verifyDockerGroupViaSG()
+	return depStatus{"docker", depGroupAdded, detail}
+}
+
 func (c *depChecker) ensureGit() depStatus {
 	if ver, ok := probeGit(c.env); ok {
 		return depStatus{"git", depOK, ver}
@@ -336,6 +564,7 @@ func (c *depChecker) ensureGit() depStatus {
 
 func (c *depChecker) ensureDocker() depStatus {
 	ver, present := probeDockerCLI(c.env)
+	justInstalled := false
 	if !present {
 		switch c.env.goos {
 		case "darwin":
@@ -349,29 +578,59 @@ func (c *depChecker) ensureDocker() depStatus {
 			if !present {
 				return depStatus{"docker", depMissing, "still not found on PATH after install"}
 			}
-			if c.tryStartDocker() || probeDockerDaemon(c.env) {
-				return depStatus{"docker", depInstalled, ver + "; daemon reachable"}
-			}
-			return depStatus{"docker", depNoDaemon, ver + "; installed but daemon not running — start it (e.g. sudo systemctl enable --now docker), then run `minifactory doctor`"}
+			justInstalled = true
 		default:
 			return depStatus{"docker", depMissing, "install Docker manually for " + c.env.goos}
 		}
 	}
-	if probeDockerDaemon(c.env) {
-		state := depOK
-		if ver == "" {
-			ver = "docker CLI present"
-		}
-		return depStatus{"docker", state, ver + "; daemon reachable"}
+	if ver == "" {
+		ver = "docker CLI present"
 	}
-	// CLI present, daemon down.
+	kind, _ := probeDockerDaemonDetail(c.env)
+	if kind == dockerProbeReachable {
+		if justInstalled {
+			return depStatus{"docker", depInstalled, ver + "; daemon reachable"}
+		}
+		return depStatus{"docker", depReady, ver + "; daemon reachable"}
+	}
+	if kind == dockerProbePermissionDenied {
+		if c.env.goos == "linux" {
+			return c.ensureDockerGroup(ver, justInstalled)
+		}
+		// macOS/Docker Desktop has no `docker` group concept: nothing
+		// extra to print or do there beyond the daemon-down guidance.
+		if c.env.goos == "darwin" {
+			return depStatus{"docker", depNoDaemon, ver + "; daemon not running — start Docker Desktop, then run `minifactory doctor`"}
+		}
+		return depStatus{"docker", depNoDaemon, ver + "; daemon not running — start it, then run `minifactory doctor`"}
+	}
+	// CLI present, daemon simply not running (or unreachable otherwise).
 	if c.env.goos == "linux" && c.tryStartDocker() {
-		return depStatus{"docker", depOK, ver + "; daemon started and reachable"}
+		if justInstalled {
+			return depStatus{"docker", depInstalled, ver + "; daemon started and reachable"}
+		}
+		return depStatus{"docker", depReady, ver + "; daemon started and reachable"}
+	}
+	// Starting may have brought the daemon up behind a socket this user
+	// cannot read — re-classify before reporting daemon-not-running.
+	if c.env.goos == "linux" {
+		if kind2, _ := probeDockerDaemonDetail(c.env); kind2 == dockerProbePermissionDenied {
+			return c.ensureDockerGroup(ver, justInstalled)
+		} else if kind2 == dockerProbeReachable {
+			if justInstalled {
+				return depStatus{"docker", depInstalled, ver + "; daemon reachable"}
+			}
+			return depStatus{"docker", depReady, ver + "; daemon reachable"}
+		}
 	}
 	if c.env.goos == "darwin" {
 		return depStatus{"docker", depNoDaemon, ver + "; daemon not running — start Docker Desktop, then run `minifactory doctor`"}
 	}
-	return depStatus{"docker", depNoDaemon, ver + "; daemon not running — start it (e.g. sudo systemctl enable --now docker), then run `minifactory doctor`"}
+	detail := ver + "; daemon not running — start it (e.g. sudo systemctl enable --now docker), then run `minifactory doctor`"
+	if c.env.goos == "linux" {
+		detail += c.dockerGroupNote()
+	}
+	return depStatus{"docker", depNoDaemon, detail}
 }
 
 // ensureDeps checks (and on Linux installs) git and Docker, printing every
@@ -385,5 +644,9 @@ func ensureDeps(env depEnv) []depStatus {
 	if env.goos == "linux" {
 		c.plan = resolveLinuxPlan(env)
 	}
-	return []depStatus{c.ensureGit(), c.ensureDocker()}
+	if env.workerContext == nil {
+		// Literal depEnvs (older tests) get the real embedded context.
+		c.env.workerContext = extractWorkerContext
+	}
+	return []depStatus{c.ensureGit(), c.ensureDocker(), c.ensureWorkerImage()}
 }

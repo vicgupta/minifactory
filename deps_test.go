@@ -29,15 +29,33 @@ func TestMain(m *testing.M) {
 type fakeHost struct {
 	present      map[string]bool
 	daemon       bool
+	permDenied   bool
 	failInstall  bool
+	failGroupadd bool
 	installWorks bool
 	startWorks   bool
 	installs     [][]string
 	probes       []string
+	user         string
+	groups       []string
+	groupExists  bool
+	imagePresent bool
+	failBuild    bool
+	outBuf       *bytes.Buffer
+}
+
+func (f *fakeHost) inGroup(name string) bool {
+	for _, g := range f.groups {
+		if g == name {
+			return true
+		}
+	}
+	return false
 }
 
 func newFakeHost(present ...string) *fakeHost {
-	f := &fakeHost{present: map[string]bool{}, installWorks: true, startWorks: true}
+	f := &fakeHost{present: map[string]bool{}, installWorks: true, startWorks: true,
+		user: "vic", groups: []string{"vic"}, groupExists: true, imagePresent: true}
 	for _, p := range present {
 		f.present[p] = true
 	}
@@ -62,7 +80,20 @@ func (f *fakeHost) env(goos string, euid int, osRelease string) depEnv {
 			return 0, "git version 2.99.0\n"
 		case name == "docker" && len(args) > 0 && args[0] == "--version" && f.present["docker"]:
 			return 0, "Docker version 99.0.0, build fake\n"
+		case name == "docker" && len(args) > 0 && args[0] == "info" && f.present["docker"] && f.permDenied:
+			return 1, "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock\n"
 		case name == "docker" && len(args) > 0 && args[0] == "info" && f.present["docker"] && f.daemon:
+			return 0, "Server Version: 99.0.0\n"
+		case name == "id" && len(args) == 2 && args[0] == "-nG":
+			return 0, strings.Join(f.groups, " ") + "\n"
+		case name == "getent" && len(args) == 2 && args[0] == "group" && args[1] == "docker":
+			if f.groupExists {
+				return 0, "docker:x:999:vic\n"
+			}
+			return 2, ""
+		case name == "docker" && len(args) > 1 && args[0] == "image" && args[1] == "inspect" && f.imagePresent:
+			return 0, "sha256:fakeimageid123 123456789\n"
+		case name == "sg" && f.inGroup("docker"):
 			return 0, "Server Version: 99.0.0\n"
 		}
 		return 1, "fake failure"
@@ -70,8 +101,24 @@ func (f *fakeHost) env(goos string, euid int, osRelease string) depEnv {
 	install := func(name string, args ...string) (int, string) {
 		full := append([]string{name}, args...)
 		f.installs = append(f.installs, full)
+		joined0 := strings.Join(full, " ")
+		if f.failGroupadd && strings.Contains(joined0, "groupadd") {
+			return 1, "fake groupadd failure"
+		}
 		if f.failInstall {
 			return 1, "fake install failure"
+		}
+		if strings.Contains(joined0, "docker build") {
+			if f.failBuild {
+				return 1, "fake build output\ndaemon exploded building image"
+			}
+			f.imagePresent = true
+		}
+		if strings.Contains(joined0, "groupadd docker") {
+			f.groupExists = true
+		}
+		if strings.Contains(joined0, "usermod -aG docker") && !f.inGroup("docker") {
+			f.groups = append(f.groups, "docker")
 		}
 		joined := strings.Join(full, " ")
 		if f.installWorks {
@@ -89,14 +136,17 @@ func (f *fakeHost) env(goos string, euid int, osRelease string) depEnv {
 		}
 		return 0, ""
 	}
+	f.outBuf = &out
 	return depEnv{
-		goos:       goos,
-		lookPath:   look,
-		run:        probe,
-		runInstall: install,
-		readFile:   func(string) ([]byte, error) { return []byte(osRelease), nil },
-		euid:       euid,
-		out:        &out,
+		goos:          goos,
+		lookPath:      look,
+		run:           probe,
+		runInstall:    install,
+		readFile:      func(string) ([]byte, error) { return []byte(osRelease), nil },
+		euid:          euid,
+		username:      func() string { return f.user },
+		workerContext: func() (string, func(), error) { return "/fake/worker", func() {}, nil },
+		out:           &out,
 	}
 }
 
@@ -112,8 +162,8 @@ func TestDepsAlreadyPresentNoInstall(t *testing.T) {
 	if len(f.installs) != 0 {
 		t.Fatalf("installs attempted for present tools: %v", f.installs)
 	}
-	if got[0].State != depOK || got[1].State != depOK {
-		t.Fatalf("statuses = %+v, want both ok", got)
+	if got[0].State != depOK || got[1].State != depReady {
+		t.Fatalf("statuses = %+v, want git ok and docker ready", got)
 	}
 	if !strings.Contains(got[0].Detail, "2.99.0") || !strings.Contains(got[1].Detail, "daemon reachable") {
 		t.Errorf("details missing versions/daemon: %+v", got)
@@ -183,10 +233,13 @@ func TestDepsUnsupportedDistroInstructs(t *testing.T) {
 	if len(f.installs) != 0 {
 		t.Fatalf("unsupported distro attempted installs: %v", f.installs)
 	}
-	for _, st := range got {
+	for _, st := range got[:2] {
 		if st.State != depMissing {
 			t.Errorf("%s = %+v, want still missing with manual instruction", st.Tool, st)
 		}
+	}
+	if got[2].State != depSkipped {
+		t.Errorf("worker image = %+v, want skipped when docker unavailable", got[2])
 	}
 }
 
@@ -194,8 +247,8 @@ func TestDepsDockerDaemonDownStarts(t *testing.T) {
 	f := newFakeHost("git", "docker", "sudo", "systemctl")
 	f.daemon = false
 	got := ensureDeps(f.env("linux", 1000, debianRelease))
-	if got[1].State != depOK || !strings.Contains(got[1].Detail, "daemon started") {
-		t.Fatalf("docker = %+v, want ok after daemon start", got[1])
+	if got[1].State != depReady || !strings.Contains(got[1].Detail, "daemon started") {
+		t.Fatalf("docker = %+v, want ready after daemon start", got[1])
 	}
 }
 
@@ -262,5 +315,233 @@ func TestInitMissingDepsStillSucceeds(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".env")); err != nil {
 		t.Errorf(".env not written despite missing deps: %v", err)
+	}
+}
+
+// ---- docker group membership -------------------------------------------
+
+func installsJoined(f *fakeHost) string { return fmt.Sprint(f.installs) }
+
+func TestDockerGroupProbePassNoCommands(t *testing.T) {
+	f := newFakeHost("git", "docker", "sudo", "sg")
+	f.daemon = true
+	f.groups = []string{"vic", "docker"}
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[1].State != depReady {
+		t.Fatalf("docker = %+v, want ready", got[1])
+	}
+	if len(f.installs) != 0 {
+		t.Fatalf("probe-pass ran commands: %v", f.installs)
+	}
+	if got[2].State != depPresent || !strings.Contains(got[2].Detail, "factory-worker-go") {
+		t.Errorf("worker image = %+v, want present", got[2])
+	}
+}
+
+func TestDockerGroupPermissionDeniedAddsUser(t *testing.T) {
+	f := newFakeHost("git", "docker", "sudo", "sg")
+	f.daemon = true
+	f.permDenied = true // groups = [vic], not docker
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[1].State != depGroupAdded {
+		t.Fatalf("docker = %+v, want group membership added", got[1])
+	}
+	if !strings.Contains(installsJoined(f), "sudo usermod -aG docker vic") {
+		t.Errorf("installs = %v, want sudo usermod -aG docker vic", f.installs)
+	}
+	out := f.outBuf.String()
+	if !strings.Contains(out, "$ sudo usermod -aG docker vic") {
+		t.Errorf("output missing printed usermod command:\n%s", out)
+	}
+	if !strings.Contains(out, "$ sg docker -c \"docker version\"") {
+		t.Errorf("output missing printed sg verification:\n%s", out)
+	}
+	for _, want := range []string{"log out and back in", "`newgrp docker`", "`docker ps` will work without sudo", "for vic"} {
+		if !strings.Contains(got[1].Detail, want) {
+			t.Errorf("detail %q missing %q", got[1].Detail, want)
+		}
+	}
+	if !got[1].outstanding() {
+		t.Error("group-added status should be outstanding (session action needed)")
+	}
+	// Image build must be skipped: this session still cannot use docker.
+	if got[2].State != depSkipped || !strings.Contains(got[2].Detail, "newgrp docker") {
+		t.Errorf("worker image = %+v, want skipped with newgrp wording", got[2])
+	}
+}
+
+func TestDockerGroupAlreadyInGroupStaleSession(t *testing.T) {
+	f := newFakeHost("git", "docker", "sudo", "sg")
+	f.permDenied = true
+	f.groups = []string{"vic", "docker"}
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[1].State != depGroupStale {
+		t.Fatalf("docker = %+v, want stale-session status", got[1])
+	}
+	if strings.Contains(installsJoined(f), "usermod") {
+		t.Errorf("stale session re-ran usermod pointlessly: %v", f.installs)
+	}
+	for _, want := range []string{"membership is set for vic", "this session doesn't have it yet", "`newgrp docker`", "log out and back in"} {
+		if !strings.Contains(got[1].Detail, want) {
+			t.Errorf("detail %q missing %q", got[1].Detail, want)
+		}
+	}
+}
+
+func TestDockerGroupDaemonDownNoUsermod(t *testing.T) {
+	f := newFakeHost("git", "docker", "sudo", "systemctl")
+	f.daemon = false
+	f.startWorks = false
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[1].State != depNoDaemon {
+		t.Fatalf("docker = %+v, want daemon not running", got[1])
+	}
+	if strings.Contains(installsJoined(f), "usermod") || strings.Contains(installsJoined(f), "groupadd") {
+		t.Errorf("daemon-down ran membership commands: %v", f.installs)
+	}
+	if got[2].State != depSkipped || !strings.Contains(got[2].Detail, "daemon not running") {
+		t.Errorf("worker image = %+v, want skipped (daemon not running)", got[2])
+	}
+}
+
+func TestDockerGroupRootSkips(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.permDenied = true
+	got := ensureDeps(f.env("linux", 0, debianRelease))
+	if len(f.installs) != 0 {
+		t.Fatalf("root ran commands: %v", f.installs)
+	}
+	if !strings.Contains(f.outBuf.String(), "root needs no `docker` group membership") {
+		t.Errorf("output missing root skip line:\n%s", f.outBuf.String())
+	}
+	if got[1].State != depNotUsable {
+		t.Errorf("docker = %+v, want still not usable for root+permission-denied", got[1])
+	}
+}
+
+func TestDockerGroupMissingAfterFreshInstallGroupaddFirst(t *testing.T) {
+	f := newFakeHost("git", "sudo", "apt-get", "systemctl", "sg") // docker absent
+	f.permDenied = true
+	f.groupExists = false
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	joined := installsJoined(f)
+	gi, ui := strings.Index(joined, "groupadd docker"), strings.Index(joined, "usermod -aG docker vic")
+	if gi < 0 || ui < 0 || gi > ui {
+		t.Fatalf("installs = %v, want groupadd before usermod", f.installs)
+	}
+	if got[1].State != depGroupAdded {
+		t.Errorf("docker = %+v, want group membership added", got[1])
+	}
+}
+
+func TestDockerGroupMissingGroupaddFails(t *testing.T) {
+	f := newFakeHost("git", "sudo", "apt-get", "systemctl")
+	f.permDenied = true
+	f.groupExists = false
+	f.failGroupadd = true
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[1].State != depNotUsable {
+		t.Fatalf("docker = %+v, want still not usable", got[1])
+	}
+	for _, want := range []string{"sudo groupadd docker", "sudo usermod -aG docker vic"} {
+		if !strings.Contains(got[1].Detail, want) {
+			t.Errorf("detail %q missing manual %q", got[1].Detail, want)
+		}
+	}
+}
+
+func TestDockerGroupUsermodFailsWarnsManual(t *testing.T) {
+	f := newFakeHost("git", "docker", "sudo")
+	f.permDenied = true
+	f.failInstall = true // usermod (the only runInstall) fails
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[1].State != depNotUsable || !strings.Contains(got[1].Detail, "sudo usermod -aG docker vic") {
+		t.Fatalf("docker = %+v, want still-not-usable with exact manual command", got[1])
+	}
+}
+
+func TestDockerGroupNoSudoManual(t *testing.T) {
+	f := newFakeHost("git", "docker") // non-root, no sudo
+	f.permDenied = true
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if len(f.installs) != 0 {
+		t.Fatalf("no-sudo ran commands: %v", f.installs)
+	}
+	if got[1].State != depNotUsable || !strings.Contains(got[1].Detail, "sudo usermod -aG docker vic") {
+		t.Errorf("docker = %+v, want manual usermod", got[1])
+	}
+	if !strings.Contains(f.outBuf.String(), "$ sudo usermod -aG docker vic") {
+		t.Errorf("output missing printed manual command:\n%s", f.outBuf.String())
+	}
+}
+
+func TestDockerGroupDarwinNoGroupStep(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.permDenied = true
+	got := ensureDeps(f.env("darwin", 1000, ""))
+	if len(f.installs) != 0 || strings.Contains(f.outBuf.String(), "usermod") {
+		t.Errorf("darwin touched docker group: installs=%v out=%s", f.installs, f.outBuf.String())
+	}
+	if got[1].State != depNoDaemon || !strings.Contains(got[1].Detail, "Docker Desktop") {
+		t.Errorf("docker = %+v, want Docker Desktop daemon guidance", got[1])
+	}
+}
+
+// ---- worker image --------------------------------------------------------
+
+func TestWorkerImagePresentNoBuild(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.daemon = true
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[2].State != depPresent {
+		t.Fatalf("worker image = %+v, want present", got[2])
+	}
+	if strings.Contains(installsJoined(f), "docker build") {
+		t.Errorf("present image was rebuilt: %v", f.installs)
+	}
+}
+
+func TestWorkerImageMissingBuilds(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.daemon = true
+	f.imagePresent = false
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[2].State != depBuilt || !strings.Contains(got[2].Detail, "factory-worker-go") {
+		t.Fatalf("worker image = %+v, want built", got[2])
+	}
+	joined := installsJoined(f)
+	if !strings.Contains(joined, "docker build -t factory-worker-go /fake/worker") {
+		t.Errorf("installs = %v, want docker build -t factory-worker-go /fake/worker", f.installs)
+	}
+	if !strings.Contains(f.outBuf.String(), "$ docker build -t factory-worker-go /fake/worker") {
+		t.Errorf("output missing printed build command:\n%s", f.outBuf.String())
+	}
+}
+
+func TestWorkerImageBuildFailsWarns(t *testing.T) {
+	f := newFakeHost("git", "docker")
+	f.daemon = true
+	f.imagePresent = false
+	f.failBuild = true
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[2].State != depBuildFailed || !got[2].outstanding() {
+		t.Fatalf("worker image = %+v, want build failed (outstanding)", got[2])
+	}
+	for _, want := range []string{"daemon exploded building image", "docker build -t factory-worker-go worker/"} {
+		if !strings.Contains(got[2].Detail, want) {
+			t.Errorf("detail %q missing %q", got[2].Detail, want)
+		}
+	}
+}
+
+func TestWorkerImageDockerAbsentSkipped(t *testing.T) {
+	f := newFakeHost("git", "sudo", "apt-get")
+	f.failInstall = true // docker install fails -> docker unavailable
+	got := ensureDeps(f.env("linux", 1000, debianRelease))
+	if got[2].State != depSkipped || !strings.Contains(got[2].Detail, "docker unavailable") {
+		t.Errorf("worker image = %+v, want skipped (docker unavailable)", got[2])
+	}
+	if strings.Contains(installsJoined(f), "docker build") {
+		t.Errorf("build attempted without docker: %v", f.installs)
 	}
 }
