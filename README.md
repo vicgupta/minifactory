@@ -28,6 +28,32 @@ minifactory run-once (every 1 min via systemd timer or cron)
 minifactory sync → merged = done / closed unmerged = failed
 ```
 
+## Install
+
+No Go toolchain needed. Grab the tarball for your platform from the
+[releases page](https://github.com/vicgupta/minifactory/releases) —
+`linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` — and unpack
+the `minifactory` binary onto your PATH:
+
+```bash
+tar -xzf minifactory-0.0.21-linux-amd64.tar.gz
+cp minifactory ~/.local/bin/   # or /usr/local/bin
+```
+
+Verify the download against `sha256sums.txt` from the same release.
+
+## Update
+
+```bash
+minifactory update          # upgrade to the latest release in place
+minifactory update --check  # just report whether an update exists
+```
+
+`update` downloads the tarball for the current platform, verifies its
+SHA256 against the release's `sha256sums.txt`, smoke-tests the new binary,
+then atomically swaps it in — keeping the previous binary as
+`minifactory.bak` and rolling back automatically if anything fails.
+
 ## Configuration
 
 `<factory-dir>/.env` (mode 600) is the **only** env file. Copy
@@ -148,6 +174,9 @@ cd /home/minifactory   # the factory dir (or ~/.minifactory for a rootless setup
 ./minifactory install-cron [--dir path]  # manage a per-user crontab entry:
                          # one flock-guarded run-once per minute (see
                          # "Run without root"); --schedule, --remove, --force
+./minifactory update [--check]  # self-update to the latest GitHub release
+                         # (checksum-verified, smoke-tested, atomic swap
+                         # with rollback — no Go toolchain needed)
 ./minifactory version    # print the factory version
 ```
 
