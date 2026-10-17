@@ -57,7 +57,10 @@ it:
   `~/.profile` and to `~/.bashrc` (or `~/.zshrc` under zsh) — running the
   installer twice adds it once. It also exports PATH for its own session
   and verifies the result; open a new shell (or `source ~/.profile`) so
-  your current shell sees `minifactory` too;
+  your current shell sees `minifactory` too. `minifactory init` does the
+  same PATH/profile step (see below), so PATH is enabled even if you
+  install the tarball manually and just run `init` — the installer is
+  not the only place that enables it;
 - then **auto-invokes `minifactory init`** by its absolute
   `~/.local/bin/minifactory` path (so PATH timing doesn't matter), in
   your real cwd/HOME. `init` itself never prompts for values — it writes
@@ -82,9 +85,7 @@ against `sha256sums.txt` from the same release, then:
 tar -xzf minifactory-<version>-linux-amd64.tar.gz
 mkdir -p ~/.local/bin
 cp minifactory ~/.local/bin/
-# if ~/.local/bin is not on your PATH yet:
-printf '\n# minifactory\nexport PATH="$HOME/.local/bin:$PATH"\n' >> ~/.profile
-minifactory init
+~/.local/bin/minifactory init   # also enables PATH (next paragraph)
 ```
 
 From a source checkout, `./install.sh --user` builds into `~/.local/bin`
@@ -106,6 +107,26 @@ Configuration).
   An undetectable distro gets a manual-install message rather than a guess.
   Missing tools never fail `init` — they are reported as outstanding in its
   dependency summary. Pass `init --skip-deps` to skip the check entirely.
+- `minifactory init` also enables PATH for the directory the running
+  binary lives in (normally `~/.local/bin`, or the `BIN_DIR` override):
+  it prepends that directory to its own process PATH (so the rest of
+  the `init` run and anything it spawns resolve `minifactory` by name)
+  and, unless that directory is already on PATH or the profile block is
+  already present, appends the same marked, idempotent block the
+  installer uses (`# minifactory` +
+  `export PATH="$HOME/.local/bin:$PATH"`) to `~/.profile` plus
+  `~/.bashrc` (or `~/.zshrc` under zsh), creating those files if needed.
+  A binary running outside the standard install directory (for example
+  a `/tmp` test build) gets no profile block pointing at a throwaway
+  directory, an undeterminable or unwritable HOME warns with the exact
+  manual export line, and neither case fails `init`. The summary ends
+  with a `path:` line (already set / profile updated / skipped /
+  warning) naming where `minifactory` resolves. New shells pick the
+  profile block up automatically; a Go binary cannot modify its parent
+  shell, so for your current shell the summary prints the one-time
+  command to run once: `export PATH="$HOME/.local/bin:$PATH"`. Pass
+  `init --skip-path` to skip this PATH/profile step entirely
+  (`--skip-deps` does not skip it).
 - On **macOS**, `init` does not install anything: install git via the Xcode
   Command Line Tools (`xcode-select --install`) and Docker via
   [Docker Desktop](https://www.docker.com/products/docker-desktop), start
@@ -217,7 +238,9 @@ using the pre-existing configuration. `init --dir <path>` sets up a
 brand-new factory directory elsewhere. Finally, `init` checks for git and
 Docker and, on Linux, installs whichever is missing (see Requirements
 above; `--skip-deps` opts out), ending with a dependency summary reporting
-each tool as ok / installed / still missing, with versions.
+each tool as ok / installed / still missing, with versions, plus a
+`path:` summary line for the PATH/profile step above (`--skip-path`
+opts out of that step only).
 
 ## Security model
 

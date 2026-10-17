@@ -20,6 +20,9 @@ func TestMain(m *testing.M) {
 			{"docker", depOK, "Docker version 0.0.0 (test stub); daemon reachable"},
 		}
 	}
+	ensurePathInInitFn = func() pathResult {
+		return pathResult{State: "skipped", Detail: "test stub"}
+	}
 	os.Exit(m.Run())
 }
 

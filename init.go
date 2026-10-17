@@ -92,11 +92,30 @@ func backupFile(src string, mode os.FileMode) (string, error) {
 // values is not an error: the user fills it in afterwards. Missing git or
 // Docker is likewise not an error: on Linux init installs them (see
 // deps.go, skipped with --skip-deps), elsewhere it instructs, and either
-// way the outcome is reported in the dependency summary.
+// way the outcome is reported in the dependency summary. PATH/profile
+// enablement (installpath.go, skipped only with --skip-path) likewise
+// warns and continues, reported as the path summary line.
 func initFactory(dir string) int { return initFactoryWithDeps(dir, false) }
 
 func initFactoryWithDeps(dir string, skipDeps bool) int {
+	return initFactoryWithOptions(dir, skipDeps, false)
+}
+
+// initFactoryWithOptions is initFactoryWithDeps plus the PATH/profile
+// step (skipped only with --skip-path; see printPathSummary). The PATH
+// step runs first, before any subprocess init spawns, so its PATH
+// update (applyInitPath (b)) covers the rest of this run; its result is
+// reported in the summary at the end.
+func initFactoryWithOptions(dir string, skipDeps, skipPath bool) int {
 	fmt.Printf("initializing minifactory in %s\n", dir)
+
+	var pathRes pathResult
+	if skipPath {
+		pathRes = pathResult{State: "skipped", Detail: "--skip-path"}
+	} else {
+		pathRes = ensurePathInInitFn()
+	}
+	homeForPath, _ := os.UserHomeDir()
 
 	// The factory dir holds the secret-bearing .env, so a directory init
 	// creates is 0700; the runtime subdirs keep the historical 0755.
@@ -198,6 +217,8 @@ func initFactoryWithDeps(dir string, skipDeps bool) int {
 			fmt.Println("  -> fix the outstanding tools above, then run `minifactory doctor`")
 		}
 	}
+	fmt.Println("path summary:")
+	printPathSummary(homeForPath, pathRes)
 	return 0
 }
 
@@ -248,7 +269,7 @@ func initWouldClobber(dir string) []string {
 	return atRisk
 }
 
-// cmdInit implements `minifactory init [--dir path] [--force] [--skip-deps]`. Without
+// cmdInit implements `minifactory init [--dir path] [--force] [--skip-deps] [--skip-path]`. Without
 // --dir it initializes the resolved factory directory (MINIFACTORY_DIR /
 // MINIFACTORY_HOME override, the cwd when it already has a .env, otherwise
 // ~/.minifactory — never the binary's directory; see resolveBaseDirWith).
@@ -270,5 +291,5 @@ func cmdInit(args []string) int {
 			return 2
 		}
 	}
-	return initFactoryWithDeps(dir, hasFlag(args, "skip-deps"))
+	return initFactoryWithOptions(dir, hasFlag(args, "skip-deps"), hasFlag(args, "skip-path"))
 }

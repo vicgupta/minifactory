@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -94,6 +95,57 @@ func ensurePathBlock(content string) (string, bool) {
 	return b.String(), true
 }
 
+// pathExportLineForDir is the export line for binDir: the canonical
+// $HOME form for the user-local default (matching install.sh), otherwise
+// the literal directory (matching install.sh's BIN_DIR-override line).
+func pathExportLineForDir(binDir, home string) string {
+	if home != "" && filepath.Clean(binDir) == defaultBinDir(home) {
+		return pathExportLine
+	}
+	return fmt.Sprintf(`export PATH="%s:$PATH"`, binDir)
+}
+
+// ensurePathBlockForLine is ensurePathBlock for an explicit export line.
+func ensurePathBlockForLine(content, line string) (string, bool) {
+	if line != pathExportLine && strings.Contains(content, line) {
+		if strings.Contains(content, profileMarker) || strings.Contains(content, line) {
+			return content, false
+		}
+	}
+	if line == pathExportLine {
+		return ensurePathBlock(content)
+	}
+	if strings.Contains(content, profileMarker) || strings.Contains(content, line) {
+		return content, false
+	}
+	var b strings.Builder
+	b.WriteString(content)
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		b.WriteString("\n")
+	}
+	if content != "" {
+		b.WriteString("\n")
+	}
+	b.WriteString(profileMarker + "\n" + line + "\n")
+	return b.String(), true
+}
+
+// profileHasPathBlock reports whether any profile for home/shell already
+// carries the marked block (or the export line) for binDir.
+func profileHasPathBlock(home, shell, binDir string) bool {
+	line := pathExportLineForDir(binDir, home)
+	for _, pf := range profilePaths(home, shell) {
+		b, err := os.ReadFile(pf)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(b), profileMarker) || strings.Contains(string(b), line) {
+			return true
+		}
+	}
+	return false
+}
+
 // profilePaths returns the profile files PATH setup should touch for home
 // and shell: always ~/.profile, plus the interactive rc for the shell
 // (zsh -> ~/.zshrc, everything else/default -> ~/.bashrc), de-duplicated.
@@ -120,13 +172,22 @@ func profilePaths(home, shell string) []string {
 // for home/shell that does not already carry it, creating files as needed.
 // It returns the files it changed. It is a no-op when the block is present.
 func ensurePathInProfiles(home, shell string) ([]string, error) {
+	return ensurePathInProfilesForDir(home, shell, defaultBinDir(home))
+}
+
+// ensurePathInProfilesForDir is ensurePathInProfiles for an explicit bin
+// dir (the standard ~/.local/bin, or a BIN_DIR override): same marker,
+// same profile targets, same idempotence, creating files as needed (as
+// install.sh does with touch). Only files under home are ever touched.
+func ensurePathInProfilesForDir(home, shell, binDir string) ([]string, error) {
+	line := pathExportLineForDir(binDir, home)
 	var changed []string
 	for _, p := range profilePaths(home, shell) {
 		b, err := os.ReadFile(p)
 		if err != nil && !os.IsNotExist(err) {
 			return changed, fmt.Errorf("reading %s: %w", p, err)
 		}
-		next, added := ensurePathBlock(string(b))
+		next, added := ensurePathBlockForLine(string(b), line)
 		if !added {
 			continue
 		}
@@ -136,6 +197,179 @@ func ensurePathInProfiles(home, shell string) ([]string, error) {
 		changed = append(changed, p)
 	}
 	return changed, nil
+}
+
+// --- init PATH step ---
+
+// pathResult is the outcome of init's PATH/profile step.
+type pathResult struct {
+	State    string
+	Detail   string
+	BinDir   string
+	Exe      string
+	Changed  []string
+	Resolved string
+	Warning  string
+	Err      error
+	Standard bool
+	Export   string
+}
+
+func (r pathResult) manualExportLine() string {
+	if r.Export != "" {
+		return r.Export
+	}
+	if r.BinDir == "" {
+		return pathExportLine
+	}
+	return fmt.Sprintf(`export PATH="%s:$PATH"`, r.BinDir)
+}
+
+var (
+	initExecutable     = func() (string, error) { return os.Executable() }
+	initLookPath       = exec.LookPath
+	legacyBinaryExists = func() bool { return fileExists(legacyBinaryPath) }
+)
+
+var ensurePathInInitFn = ensurePathInInit
+
+func ensurePathInInit() pathResult {
+	exe, err := initExecutable()
+	if err != nil {
+		return pathResult{State: "warning", Detail: "could not determine the running binary: " + err.Error(), Err: err}
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	home, _ := os.UserHomeDir()
+	return applyInitPath(exe, home, os.Getenv("SHELL"), os.Getenv("BIN_DIR"))
+}
+
+// applyInitPath does both honest things a child process can do: (a) persist
+// PATH for future shells via the marked profile block (reusing
+// ensurePathInProfilesForDir, install.sh parity), only when binDir is the
+// standard ~/.local/bin or BIN_DIR override; (b) prepend binDir to this
+// process's PATH before any later init steps. It cannot modify the parent shell.
+func applyInitPath(exe, home, shell, binDirOverride string) pathResult {
+	exe = filepath.Clean(exe)
+	binDir := filepath.Dir(exe)
+	res := pathResult{Exe: exe, BinDir: binDir}
+	if exe == "." || binDir == "" {
+		res.State = "warning"
+		res.Detail = "could not determine the running binary's directory"
+		return res
+	}
+	origPath := os.Getenv("PATH")
+	wasOnPath := pathContainsDir(origPath, binDir)
+	if !wasOnPath {
+		newPath := binDir
+		if origPath != "" {
+			newPath = binDir + string(os.PathListSeparator) + origPath
+		}
+		_ = os.Setenv("PATH", newPath)
+	}
+	expected := resolveBinDir(binDirOverride, home)
+	if binDirOverride != "" && !filepath.IsAbs(expected) {
+		if abs, err := filepath.Abs(expected); err == nil {
+			expected = abs
+		}
+	}
+	res.Standard = home != "" && filepath.Clean(binDir) == filepath.Clean(expected)
+	res.Export = pathExportLineForDir(binDir, home)
+	switch {
+	case home == "":
+		res.State = "warning"
+		res.Detail = "could not determine HOME, so no profile was updated"
+	case !res.Standard:
+		res.State = "skipped"
+		res.Detail = fmt.Sprintf("running from %s, outside the standard install dir (%s), so no profile was updated", exe, expected)
+	case wasOnPath:
+		res.State = "already set"
+		res.Detail = fmt.Sprintf("%s is already on PATH", binDir)
+	default:
+		changed, err := ensurePathInProfilesForDir(home, shell, binDir)
+		if err != nil {
+			res.State = "warning"
+			res.Detail = "could not update shell profiles"
+			res.Err = err
+		} else if len(changed) == 0 {
+			res.State = "already set"
+			res.Detail = fmt.Sprintf("profile block already present for %s - new shells will pick it up automatically", binDir)
+		} else {
+			res.State = "profile updated"
+			res.Changed = changed
+			res.Detail = "profile block added"
+		}
+	}
+	if p, err := initLookPath("minifactory"); err == nil {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			p = resolved
+		}
+		res.Resolved = p
+		if filepath.Clean(p) != filepath.Clean(exe) {
+			if w := legacyBinaryWarning(exe, legacyBinaryExists()); w != "" {
+				res.Warning = w
+			} else {
+				res.Warning = fmt.Sprintf("warning: `minifactory` on PATH resolves to %s, not the running binary %s - remove the other copy so it does not shadow this one", p, exe)
+			}
+		}
+	}
+	if res.Warning == "" {
+		if w := legacyBinaryWarning(exe, legacyBinaryExists()); w != "" {
+			res.Warning = w
+		}
+	}
+	return res
+}
+
+func shortProfilePath(home, p string) string {
+	if home != "" && filepath.Dir(p) == filepath.Clean(home) {
+		return "~/" + filepath.Base(p)
+	}
+	return p
+}
+
+func printPathSummary(home string, r pathResult) {
+	switch r.State {
+	case "skipped":
+		if r.Detail == "--skip-path" {
+			fmt.Println("  path: skipped (--skip-path)")
+		} else {
+			fmt.Printf("  path: skipped - %s\n", r.Detail)
+			if r.Resolved != "" {
+				fmt.Printf("        resolves in this init run as: %s\n", r.Resolved)
+			}
+		}
+	case "already set":
+		line := fmt.Sprintf("  path: already set - %s", r.Detail)
+		if r.Resolved != "" {
+			line += fmt.Sprintf("; minifactory resolves to %s", r.Resolved)
+		}
+		fmt.Println(line)
+	case "profile updated":
+		var names []string
+		for _, c := range r.Changed {
+			names = append(names, shortProfilePath(home, c))
+		}
+		fmt.Printf("  path: profile updated (%s) - new shells will pick it up automatically; your current shell was not modified, run this once in it: %s\n", strings.Join(names, ", "), r.manualExportLine())
+		if r.Resolved != "" {
+			fmt.Printf("        minifactory resolves in this init run as: %s\n", r.Resolved)
+		}
+	case "warning":
+		fmt.Printf("  path: warning - %s", r.Detail)
+		if r.Err != nil {
+			fmt.Printf(": %v", r.Err)
+		}
+		fmt.Printf("; run this once in your current shell: %s\n", r.manualExportLine())
+		if r.Resolved != "" {
+			fmt.Printf("        minifactory resolves in this init run as: %s\n", r.Resolved)
+		}
+	default:
+		fmt.Printf("  path: %s - %s\n", r.State, r.Detail)
+	}
+	if r.Warning != "" {
+		fmt.Printf("  %s\n", r.Warning)
+	}
 }
 
 // dirWritable reports whether dir exists (or can be created) and accepts a
@@ -189,7 +423,7 @@ func assessBinaryLocation(exe, home, pathEnv string) (checkStatus, string) {
 		if pathContainsDir(pathEnv, filepath.Dir(def)) {
 			return statusOK, fmt.Sprintf("binary: %s (user-local default, on PATH)", exe)
 		}
-		return statusWarn, fmt.Sprintf("binary: %s (user-local default)\n      -> %s is not on PATH yet: add the `# minifactory` block via install.sh, then open a new shell",
+		return statusWarn, fmt.Sprintf("binary: %s (user-local default)\n      -> %s is not on PATH yet: add the `# minifactory` block via install.sh or `minifactory init`, then open a new shell",
 			exe, filepath.Dir(def))
 	default:
 		if pathContainsDir(pathEnv, filepath.Dir(exe)) {
