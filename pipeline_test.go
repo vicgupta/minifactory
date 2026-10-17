@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -190,5 +192,96 @@ func TestRetryNoSuchTask(t *testing.T) {
 
 	if rc := cmdRetry([]string{"missing"}); rc == 0 {
 		t.Fatal("expected failure for unknown id")
+	}
+}
+
+func TestParseStateFilter(t *testing.T) {
+	got, err := parseStateFilter("failed")
+	if err != nil || len(got) != 1 || got[0] != "failed" {
+		t.Errorf("single: got %v, %v", got, err)
+	}
+	got, err = parseStateFilter("pr_open,failed")
+	if err != nil || len(got) != 2 || got[0] != "pr_open" || got[1] != "failed" {
+		t.Errorf("multi: got %v, %v", got, err)
+	}
+	got, err = parseStateFilter(" pr_open , failed ")
+	if err != nil || len(got) != 2 {
+		t.Errorf("whitespace: got %v, %v", got, err)
+	}
+	if _, err := parseStateFilter("faild"); err == nil {
+		t.Error("unknown state should error")
+	} else if !strings.Contains(err.Error(), "queued") || !strings.Contains(err.Error(), `"faild"`) {
+		t.Errorf("error should name the bad state and list valid ones: %v", err)
+	}
+	if _, err := parseStateFilter(""); err == nil {
+		t.Error("empty should error")
+	}
+	if _, err := parseStateFilter("  , "); err == nil {
+		t.Error("whitespace-only should error")
+	}
+}
+
+func TestCmdListStateFilter(t *testing.T) {
+	restore := testDirs(t)
+	defer restore()
+	seedTask(t, Task{ID: "a1", Title: "one", State: "failed", CreatedAt: 1})
+	seedTask(t, Task{ID: "b2", Title: "two", State: "pr_open", CreatedAt: 2})
+	seedTask(t, Task{ID: "c3", Title: "three", State: "queued", CreatedAt: 3})
+
+	out := captureStdout(t, func() {
+		if rc := cmdList([]string{"--state", "failed"}); rc != 0 {
+			t.Errorf("rc = %d", rc)
+		}
+	})
+	if !strings.Contains(out, "a1") || strings.Contains(out, "b2") || strings.Contains(out, "c3") {
+		t.Errorf("single-state filter wrong:\n%s", out)
+	}
+
+	out = captureStdout(t, func() {
+		if rc := cmdList([]string{"--state=pr_open,failed"}); rc != 0 {
+			t.Errorf("rc = %d", rc)
+		}
+	})
+	if !strings.Contains(out, "a1") || !strings.Contains(out, "b2") || strings.Contains(out, "c3") {
+		t.Errorf("multi-state filter wrong:\n%s", out)
+	}
+
+	// --json with a filter: only matching tasks in the array.
+	out = captureStdout(t, func() {
+		if rc := cmdList([]string{"--state", "queued", "--json"}); rc != 0 {
+			t.Errorf("rc = %d", rc)
+		}
+	})
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(out), &arr); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(arr) != 1 || arr[0]["id"] != "c3" {
+		t.Errorf("json filter wrong: %v", arr)
+	}
+
+	// Empty match prints [].
+	out = captureStdout(t, func() {
+		if rc := cmdList([]string{"--state", "done", "--json"}); rc != 0 {
+			t.Errorf("rc = %d", rc)
+		}
+	})
+	if strings.TrimSpace(out) != "[]" {
+		t.Errorf("empty match should print [], got %q", out)
+	}
+
+	// Unknown state: exit 2.
+	if rc := cmdList([]string{"--state", "faild"}); rc != 2 {
+		t.Errorf("unknown state rc = %d, want 2", rc)
+	}
+
+	// No filter: all three listed (unchanged behavior).
+	out = captureStdout(t, func() {
+		if rc := cmdList(nil); rc != 0 {
+			t.Errorf("rc = %d", rc)
+		}
+	})
+	if !strings.Contains(out, "a1") || !strings.Contains(out, "b2") || !strings.Contains(out, "c3") {
+		t.Errorf("unfiltered list wrong:\n%s", out)
 	}
 }
