@@ -495,7 +495,10 @@ func checkTimer() checkResult {
 	timerName := ""
 	var showOut string
 	for _, name := range timerUnitNames {
-		if rc, out := runCmd(10*time.Second, "", nil, "systemctl", "show", name); rc == 0 {
+		// Note: `systemctl show` exits 0 even for a missing unit, so
+		// a candidate only counts when it actually loaded.
+		if rc, out := runCmd(10*time.Second, "", nil, "systemctl", "show", name); rc == 0 &&
+			showVal(out, "LoadState") != "not-found" {
 			timerName, showOut = name, out
 			break
 		}
