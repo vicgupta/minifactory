@@ -172,7 +172,7 @@ scrubbed agent env — works the same.
 ```bash
 cd /home/minifactory   # the factory dir (or ~/.minifactory for a rootless setup)
 ./minifactory issue --repo https://github.com/ORG/REPO.git --title "Fix X" --body "..."
-./minifactory list
+./minifactory list [--state pr_open,failed]  # optionally filter to states
 ./minifactory logs <id>
 ./minifactory run-once   # normally the systemd timer does this
 ./minifactory sync
