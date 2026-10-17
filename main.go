@@ -235,6 +235,10 @@ func usage() {
                                         manage a per-user crontab entry running
                                         one cycle on the schedule (default every
                                         minute) — no root needed; guarded by flock
+  update [--check]                      self-update to the latest GitHub release
+                                        (downloads the binary for this platform,
+                                        verifies its checksum, smoke-tests it,
+                                        then swaps it in — no Go toolchain needed)
   version                             print the factory version
 
   global flags:
@@ -347,6 +351,8 @@ func main() {
 		rc = cmdInit(os.Args[2:])
 	case "install-cron":
 		rc = cmdInstallCron(os.Args[2:])
+	case "update":
+		rc = cmdUpdate(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("minifactory " + version)
 	default:
