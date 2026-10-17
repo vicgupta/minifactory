@@ -482,27 +482,39 @@ func parseListTimersNext(out string) time.Time {
 	return t
 }
 
+// timerUnitNames are the timer unit names doctor looks for, in order: the
+// original install name plus the rename spellings a live install may use.
+var timerUnitNames = []string{"minifactory-go.timer", "minifactory.timer", "minfactory.timer"}
+
 func checkTimer() checkResult {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return checkResult{"timer", statusInfo, "systemctl not available — timer checks skipped (non-systemd host)"}
 	}
 	var lines []string
 	status := statusOK
-	rc, out := runCmd(10*time.Second, "", nil, "systemctl", "show", "minifactory-go.timer")
-	if rc != 0 {
-		return checkResult{"timer", statusWarn,
-			"minifactory-go.timer not found: " + strings.TrimSpace(firstLine(out, 160)) + "\n      -> install.sh installs and enables the timer"}
+	timerName := ""
+	var showOut string
+	for _, name := range timerUnitNames {
+		if rc, out := runCmd(10*time.Second, "", nil, "systemctl", "show", name); rc == 0 {
+			timerName, showOut = name, out
+			break
+		}
 	}
+	if timerName == "" {
+		return checkResult{"timer", statusWarn,
+			"no factory timer found (looked for " + strings.Join(timerUnitNames, ", ") + ")\n      -> install.sh installs and enables the timer"}
+	}
+	svcName := strings.TrimSuffix(timerName, ".timer") + ".service"
 	ti := timerInfo{
-		active:    showVal(out, "ActiveState"),
-		fileState: showVal(out, "UnitFileState"),
-		last:      parseSystemdTime(showVal(out, "LastTriggerUSec")),
+		active:    showVal(showOut, "ActiveState"),
+		fileState: showVal(showOut, "UnitFileState"),
+		last:      parseSystemdTime(showVal(showOut, "LastTriggerUSec")),
 	}
 	if rc, lout := runCmd(10*time.Second, "", nil, "systemctl", "list-timers",
-		"minifactory-go.timer", "--no-pager", "--no-legend"); rc == 0 {
+		timerName, "--no-pager", "--no-legend"); rc == 0 {
 		ti.next = parseListTimersNext(lout)
 	}
-	lines = append(lines, "minifactory-go.timer: active="+ti.active+" enabled="+ti.fileState)
+	lines = append(lines, timerName+": active="+ti.active+" enabled="+ti.fileState)
 	if ti.active != "active" {
 		status = statusFail
 		lines = append(lines, "-> timer is not active: the factory will not pick up work")
@@ -531,7 +543,7 @@ func checkTimer() checkResult {
 
 	// recent service activity from the journal
 	if _, err := exec.LookPath("journalctl"); err == nil {
-		rc, out := runCmd(10*time.Second, "", nil, "journalctl", "-u", "minifactory-go.service",
+		rc, out := runCmd(10*time.Second, "", nil, "journalctl", "-u", svcName,
 			"--since", "15 min ago", "-q", "--no-pager", "-o", "cat", "-n", "6")
 		if rc == 0 {
 			if tail := strings.TrimSpace(out); tail != "" {
