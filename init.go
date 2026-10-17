@@ -89,8 +89,13 @@ func backupFile(src string, mode os.FileMode) (string, error) {
 //     pre-existing configuration captured before the rewrite
 //
 // It returns 0 on success, 1 on filesystem errors. A template with empty
-// values is not an error: the user fills it in afterwards.
-func initFactory(dir string) int {
+// values is not an error: the user fills it in afterwards. Missing git or
+// Docker is likewise not an error: on Linux init installs them (see
+// deps.go, skipped with --skip-deps), elsewhere it instructs, and either
+// way the outcome is reported in the dependency summary.
+func initFactory(dir string) int { return initFactoryWithDeps(dir, false) }
+
+func initFactoryWithDeps(dir string, skipDeps bool) int {
 	fmt.Printf("initializing minifactory in %s\n", dir)
 
 	// The factory dir holds the secret-bearing .env, so a directory init
@@ -175,6 +180,24 @@ func initFactory(dir string) int {
 	// configuration: after the rewrite above, .env is always a fresh
 	// template. Best-effort — a failure warns but doesn't fail init.
 	ensureLabels(preCfg["GITHUB_TOKEN"], preCfg["GITHUB_REPO"])
+
+	// Host tools: check (and on Linux, install) git and Docker. Best-effort
+	// like label setup — outstanding tools warn in the summary below and
+	// never fail init, which has already written .env and the runtime dirs.
+	if skipDeps {
+		fmt.Println("dependencies: skipped (--skip-deps)")
+	} else {
+		statuses := ensureInitDeps(false)
+		fmt.Println("dependency summary:")
+		outstanding := false
+		for _, st := range statuses {
+			fmt.Printf("  %s: %s — %s\n", st.Tool, st.State, st.Detail)
+			outstanding = outstanding || st.outstanding()
+		}
+		if outstanding {
+			fmt.Println("  -> fix the outstanding tools above, then run `minifactory doctor`")
+		}
+	}
 	return 0
 }
 
@@ -225,7 +248,7 @@ func initWouldClobber(dir string) []string {
 	return atRisk
 }
 
-// cmdInit implements `minifactory init [--dir path] [--force]`. Without
+// cmdInit implements `minifactory init [--dir path] [--force] [--skip-deps]`. Without
 // --dir it initializes the resolved factory directory (MINIFACTORY_DIR /
 // MINIFACTORY_HOME override, the cwd when it already has a .env, otherwise
 // ~/.minifactory — never the binary's directory; see resolveBaseDirWith).
@@ -247,5 +270,5 @@ func cmdInit(args []string) int {
 			return 2
 		}
 	}
-	return initFactory(dir)
+	return initFactoryWithDeps(dir, hasFlag(args, "skip-deps"))
 }

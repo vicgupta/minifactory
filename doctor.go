@@ -241,7 +241,7 @@ func checkTools() checkResult {
 		lines = append(lines, "docker CLI: present ("+p+")")
 	}
 	if status == statusFail {
-		lines = append(lines, "-> install missing tools before the factory can run")
+		lines = append(lines, "-> install missing tools before the factory can run (`minifactory init` installs them on Linux; on macOS install Xcode CLT / Docker Desktop manually)")
 	}
 	return checkResult{"host tools", status, strings.Join(lines, "\n      ")}
 }

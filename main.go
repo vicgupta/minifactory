@@ -31,8 +31,9 @@
 //	                                      run records: aggregate stats,
 //	                                      per-task attempts, costs, timings
 //	doctor [--json]                       detailed health analysis
-//	init [--dir path]                     initialize a factory dir: runtime dirs,
-//	                                      fresh .env (old one backed up), config check
+//	init [--dir path] [--skip-deps]       initialize a factory dir: runtime dirs,
+//	                                      fresh .env (old one backed up), config
+//	                                      check, git/docker check+install
 //	version                               print the factory version
 package main
 
@@ -297,8 +298,10 @@ func usage() {
   doctor [--json] [--probe]           detailed health analysis of the factory
                                       (--probe spends one API call verifying
                                       the selected agent's token is accepted)
-  init [--dir path] [--force]            initialize a factory dir (dirs, fresh .env
-                                        with backup of the old one, config check;
+  init [--dir path] [--force] [--skip-deps]
+                                        initialize a factory dir (dirs, fresh .env
+                                        with backup of the old one, config check,
+                                        git/docker check and install on Linux;
                                         refuses live state without --force)
   install-cron [--dir path] [--schedule "*/5 * * * *"] [--remove] [--force]
                                         manage a per-user crontab entry running

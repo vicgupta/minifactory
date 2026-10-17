@@ -44,6 +44,25 @@ cp minifactory ~/.local/bin/   # or /usr/local/bin
 
 Verify the download against `sha256sums.txt` from the same release.
 
+## Requirements
+
+- **git** and **Docker** (CLI + a running daemon) on the host.
+- On **Linux**, `minifactory init` installs whichever is missing for you:
+  it detects Debian/Ubuntu (`apt-get install -y git` / `docker.io`) and
+  RHEL/Fedora-family distros (`dnf`/`yum install -y git` / `docker`) from
+  `/etc/os-release`, prints every command before running it, uses `sudo`
+  only for the package/service commands when not root (and, when sudo is
+  unavailable, prints the exact commands for you to run instead), then
+  re-verifies each tool and tries to start the Docker daemon
+  (`systemctl enable --now docker`, falling back to `service docker start`).
+  An undetectable distro gets a manual-install message rather than a guess.
+  Missing tools never fail `init` — they are reported as outstanding in its
+  dependency summary. Pass `init --skip-deps` to skip the check entirely.
+- On **macOS**, `init` does not install anything: install git via the Xcode
+  Command Line Tools (`xcode-select --install`) and Docker via
+  [Docker Desktop](https://www.docker.com/products/docker-desktop), start
+  Docker Desktop, then run `minifactory doctor` to verify.
+
 The binary may live in a protected directory (`/usr/local/bin`): no state
 is written beside it. Configuration and runtime state resolve as described
 under Configuration below — by default in `~/.minifactory/`.
@@ -126,7 +145,10 @@ re-run with `--force` to proceed (backups are still made). It also ensures the f
 `factory-inProgress` / `factory-completed` / `factory-createdPR` /
 `completed` / `factory-rejected`) exist on the configured `GITHUB_REPO`,
 using the pre-existing configuration. `init --dir <path>` sets up a
-brand-new factory directory elsewhere.
+brand-new factory directory elsewhere. Finally, `init` checks for git and
+Docker and, on Linux, installs whichever is missing (see Requirements
+above; `--skip-deps` opts out), ending with a dependency summary reporting
+each tool as ok / installed / still missing, with versions.
 
 ## Security model
 
@@ -214,6 +236,7 @@ cd /home/minifactory   # the factory dir (or ~/.minifactory, the default when no
                          # non-empty unless --force is given.
 ./minifactory init --force  # same, but proceed past live state (backups still made)
 ./minifactory init --dir /srv/factory2  # initialize a brand-new factory dir
+./minifactory init --skip-deps  # same, but skip the git/docker check+install
 ./minifactory install-cron [--dir path]  # manage a per-user crontab entry:
                          # one flock-guarded run-once per minute (see
                          # "Run without root"); --schedule, --remove, --force
@@ -312,6 +335,7 @@ for status comments and labels).
 - `pipeline.go` — the task subcommands (issue/run-once/sync/list/logs/poll/retry)
 - `doctor.go` — the `doctor` health-analysis subcommand
 - `init.go` — the `init` subcommand: runtime dirs, `.env` backup + fresh template, config check
+- `deps.go` — git/docker check and (Linux) install used by `init`, behind a fakeable host seam
 - `cron.go` — the `install-cron` subcommand: per-user crontab management for rootless scheduling
 - `worker/stub.go` — deterministic stub agent, compiled into the worker image
 - `worker/Dockerfile` — multi-stage: builds the stub, ships it in the
