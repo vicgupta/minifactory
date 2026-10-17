@@ -177,6 +177,10 @@ cd /home/minifactory   # the factory dir (or ~/.minifactory for a rootless setup
 ./minifactory update [--check]  # self-update to the latest GitHub release
                          # (checksum-verified, smoke-tested, atomic swap
                          # with rollback — no Go toolchain needed)
+./minifactory delete-all [--dir path]  # tear down an installation: systemd
+                         # units, crontab entry, the nologin service user,
+                         # and the dir's managed state (prints a plan first;
+                         # --force executes; binary is left in place)
 ./minifactory version    # print the factory version
 ```
 
