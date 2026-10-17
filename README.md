@@ -14,11 +14,13 @@ GitHub issue (label: ready) ──poll──▶ queue (data/queue.json)
                                             │
 minifactory run-once (every 1 min via systemd timer or cron)
   1. shallow-clone repo on host → work/<id>
-  2. agent works: stub runs in a disposable Docker sandbox (full egress,
-     2 CPU / 4 GB), or a real agent CLI (claude/codex/opencode) runs on the
-     host against work/<id>
-  3. host validates result.json {changed_files, tests_passed, summary};
-     for real agents the test suite is re-run inside a sandbox
+  2. agent works inside a disposable Docker sandbox (full egress,
+     2 CPU / 4 GB): the stub or a real agent CLI (claude/codex/opencode),
+     with only the task workdir mounted and only that agent's token
+     injected. Without docker it falls back to the host with a warning.
+  3. host validates result.json {changed_files, tests_passed, summary},
+     cross-checks changed_files against git status, and for real agents
+     re-runs the test suite inside a sandbox
   4. commit + push branch factory/<id>, open PR via GitHub API
                                             │
                                      state: pr_open
@@ -107,9 +109,16 @@ brand-new factory directory elsewhere.
   user installed it.
 - Sandbox containers get full egress (agents need package registries) plus
   cpu/mem/pids caps and `--rm`. They are disposable: one per task.
-- **No secrets ever enter a container.** Tokens live only in `.env` (600)
-  and are used host-side (git push, GitHub API, agent CLIs). They are never
-  logged.
+- **Agents run inside a disposable Docker sandbox.** The worker image
+  (`factory-worker-go`) carries the agent CLIs alongside the stub. Each run
+  mounts only its task workdir and injects only that agent's own token —
+  via a 0600 env-file staged outside the repo and removed afterwards, so it
+  never appears in docker argv, `ps` output, the git history, or the task
+  prompt (which travels via a read-only mounted file). `GITHUB_TOKEN`, the
+  other agents' tokens, and SSH/cloud credentials never enter a container.
+  Rebuild the image after pulling new CLI versions:
+  `docker build -t factory-worker-go worker/`. Without docker or the image,
+  the CLI falls back to the host with a scrubbed env and a loud warning.
 - **Agent subprocesses get a scrubbed environment.** They inherit only a
   whitelist (`PATH`, `HOME`, proxy vars, …) plus their own runner's token.
   `GITHUB_TOKEN`, the other agents' tokens, and SSH/cloud credentials are
@@ -119,8 +128,11 @@ brand-new factory directory elsewhere.
   `--dangerously-skip-permissions`, codex
   `--dangerously-bypass-approvals-and-sandbox`) with stdin closed, so a
   permission prompt can never hang a cycle.
-- For real-agent tasks the runner re-runs the test suite inside a disposable
-  sandbox, so generated code executes only there — never on the host.
+- The typed handoff is verified, not trusted: `changed_files` is
+  cross-checked against `git status` (a dishonest handoff fails the task),
+  and for real-agent tasks the runner re-runs the test suite inside a
+  disposable sandbox, so generated code executes only there — never on the
+  host.
 - The agent can only write its task workdir and push its own `factory/<id>`
   branch. Nothing merges without human review of the PR in GitHub.
 
@@ -209,8 +221,10 @@ go build -o minifactory .
 running version, so you can always tell which build is deployed.
 
 `doctor` sanity-checks token shapes (a stub where a real token belongs is a
-warning — this is what a dead credential looks like before it 401s), and
-`doctor --probe` spends one real API call verifying the selected agent's
+warning — this is what a dead credential looks like before it 401s), verifies
+the worker image carries the selected agent's CLI (a missing CLI fails the
+docker check, since the factory would silently fall back to host execution),
+and `doctor --probe` spends one real API call verifying the selected agent's
 token is actually accepted. Without `--probe`, doctor stays fast and free:
 `--version` checks never authenticate.
 
@@ -270,7 +284,8 @@ for status comments and labels).
 - `cron.go` — the `install-cron` subcommand: per-user crontab management for rootless scheduling
 - `worker/stub.go` — deterministic stub agent, compiled into the worker image
 - `worker/Dockerfile` — multi-stage: builds the stub, ships it in the
-  python:3.12-slim + git + node + pytest toolchain image (`factory-worker-go`)
+  python:3.12-slim + git + node + pytest toolchain image (`factory-worker-go`),
+  plus the vendor agent CLIs (claude, codex, opencode) for sandboxed runs
 
 ## What's deliberately missing
 
