@@ -23,7 +23,8 @@
 //	                                      one
 //	run-once                              run the next queued task end-to-end
 //	sync                                  update pr_open tasks from GitHub PR state
-//	list [--json]                         show tasks
+//	list [--json] [--state s]               show tasks, optionally filtered
+//	                                      to one or more states
 //	logs <id>                             show a task's log
 //	poll                                  enqueue new `ready`-labeled GitHub issues
 //	retry <id> [--force]                  reclaim a stuck/failed task
@@ -225,7 +226,10 @@ func usage() {
                          unless --issue N links an existing one
   run-once                              run the next queued task end-to-end
   sync                                  update pr_open tasks from GitHub PR state
-  list [--json]                         show tasks
+  list [--json] [--state s]               show tasks, optionally filtered
+                                      to states (comma-separated):
+                                      queued,running,failed,pr_open,
+                                      split,done
   logs <id>                             show a task's log
   poll                                  enqueue new 'ready'-labeled GitHub issues
   retry <id> [--force]                  reclaim a stuck/failed task
