@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -171,6 +172,7 @@ func cmdIssue(args []string) int {
 	repo := flagVal(args, "repo")
 	title := flagVal(args, "title")
 	body := flagVal(args, "body")
+	bodyFile := flagVal(args, "body-file")
 	explicitIssue := false
 	issueNum := 0
 	if s := flagVal(args, "issue"); s != "" {
@@ -182,9 +184,32 @@ func cmdIssue(args []string) int {
 		issueNum = n
 		explicitIssue = true
 	}
+	// Flag-shape errors first: presence by occurrence, not value, since
+	// --body "" is a legitimate (empty) body.
+	if flagPresent(args, "body") && flagPresent(args, "body-file") {
+		fmt.Fprintln(os.Stderr, "issue: use only one of --body or --body-file")
+		return 2
+	}
 	if repo == "" || title == "" {
 		fmt.Fprintln(os.Stderr, "issue requires --repo and --title")
 		return 2
+	}
+	// Body resolution comes after required-flag validation: --body-file -
+	// reads stdin, and we must not block on a pipe/heredoc for an already
+	// invalid invocation. The body is used verbatim, no trimming.
+	if flagPresent(args, "body-file") {
+		var b []byte
+		var err error
+		if bodyFile == "-" {
+			b, err = io.ReadAll(os.Stdin)
+		} else {
+			b, err = os.ReadFile(bodyFile)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "issue: cannot read body file %q: %v\n", bodyFile, err)
+			return 2
+		}
+		body = string(b)
 	}
 	repoURL := normalizeRepoURL(repo)
 	tracef("issue: repo=%s title=%q", repoURL, title)
@@ -717,11 +742,61 @@ type taskListEntry struct {
 	LastCostUSD   *float64 `json:"last_cost_usd,omitempty"`
 }
 
+// validStates are the task states --state may filter on.
+var validStates = []string{"queued", "running", "failed", "pr_open", "split", "done"}
+
+// parseStateFilter parses a --state value: a comma-separated list of state
+// names, with surrounding whitespace ignored. Unknown names are an error.
+func parseStateFilter(s string) ([]string, error) {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		ok := false
+		for _, v := range validStates {
+			if name == v {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("unknown state %q (want one of: %s)", name, strings.Join(validStates, ", "))
+		}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("--state needs at least one state (want one of: %s)", strings.Join(validStates, ", "))
+	}
+	return out, nil
+}
+
 func cmdList(args []string) int {
 	tasks, err := listTasks()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
+	}
+	var states []string
+	if s := flagVal(args, "state"); s != "" {
+		var err error
+		states, err = parseStateFilter(s)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "list:", err)
+			return 2
+		}
+		want := map[string]bool{}
+		for _, st := range states {
+			want[st] = true
+		}
+		filtered := tasks[:0]
+		for _, t := range tasks {
+			if want[t.State] {
+				filtered = append(filtered, t)
+			}
+		}
+		tasks = filtered
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt < tasks[j].CreatedAt })
 	if hasFlag(args, "json") {
@@ -749,17 +824,63 @@ func cmdList(args []string) int {
 	return 0
 }
 
+// tailLines returns the last n lines of s. A trailing newline does not
+// count as an extra line; the result ends with a single trailing newline
+// when it is non-empty (matching how log lines are written).
+func tailLines(s string, n int) string {
+	s = strings.TrimSuffix(s, "\n")
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 func cmdLogs(args []string) int {
-	if len(args) < 1 {
+	tailN := 0
+	if flagPresent(args, "tail") {
+		tailStr := flagVal(args, "tail")
+		// Atoi accepts a leading +, which we reject to keep the meaning
+		// unambiguous (last-N only, never from-line-N).
+		n, err := strconv.Atoi(tailStr)
+		if err != nil || n < 1 || strings.HasPrefix(tailStr, "+") || strings.HasPrefix(tailStr, "-") {
+			fmt.Fprintln(os.Stderr, "logs: --tail must be a positive number")
+			return 2
+		}
+		tailN = n
+	}
+	// The id is the first positional argument, so --tail may come before
+	// or after it. Task ids are hex and never start with -.
+	id := ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--tail" {
+			i++ // skip the flag's space-separated value
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue // --tail=... and any other flags
+		}
+		id = a
+		break
+	}
+	if id == "" {
 		fmt.Fprintln(os.Stderr, "logs requires an id")
 		return 2
 	}
-	b, err := os.ReadFile(filepath.Join(logDir, args[0]+".log"))
+	b, err := os.ReadFile(filepath.Join(logDir, id+".log"))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "no logs for "+args[0])
+		fmt.Fprintln(os.Stderr, "no logs for "+id)
 		return 1
 	}
-	fmt.Print(string(b))
+	if tailN == 0 {
+		fmt.Print(string(b))
+	} else {
+		fmt.Print(tailLines(string(b), tailN))
+	}
 	return 0
 }
 

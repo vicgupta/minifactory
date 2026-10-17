@@ -352,8 +352,9 @@ scrubbed agent env — works the same.
 ```bash
 cd /home/minifactory   # the factory dir (or ~/.minifactory, the default when no ./.env or override)
 ./minifactory issue --repo https://github.com/ORG/REPO.git --title "Fix X" --body "..."
-./minifactory list
-./minifactory logs <id>
+# or --body-file path/to/spec.md, or --body-file - to read the body from stdin
+./minifactory list [--state pr_open,failed]  # optionally filter to states
+./minifactory logs <id> [--tail 40]  # optionally the last 40 lines
 ./minifactory run-once   # normally the systemd timer does this
 ./minifactory sync
 ./minifactory poll
