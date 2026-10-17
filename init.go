@@ -40,6 +40,12 @@ AGENT=
 # Optional. Turn budget per task for the claude runner (default 30).
 # Raise for large tasks; each turn costs model usage.
 MAX_TURNS=
+
+# Optional. Per-task spend cap in USD (e.g. 2.50). When the sizer's or the
+# agent's reported model cost exceeds it, the run record is flagged
+# over_budget, the PR body carries a warning, and `+"`minifactory report`"+`
+# lists it. Runs are never killed for going over budget. Unset = off.
+MAX_COST_USD_PER_TASK=
 `, time.Now().Format("2006-01-02 15:04:05"))
 }
 
