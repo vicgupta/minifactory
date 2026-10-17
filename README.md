@@ -3,14 +3,16 @@
 A minimal software factory on one VPS: a queue, a single Go binary, and Docker.
 No web server, no UI, no webhook listener — GitHub is the UI.
 
-It lives at `/root/minifactory-go/` with its own queue (`data/queue.json`),
-worker image (`factory-worker-go`), and systemd timer (`minifactory-go.timer`,
-firing every minute).
+It runs as an unprivileged user — never root — with its own queue
+(`data/queue.json`), worker image (`factory-worker-go`), and a timer firing
+every minute: a systemd timer whose service runs as the `minifactory` user,
+or, for users without root, a per-user crontab entry managed by
+`minifactory install-cron` (see "Run without root").
 
 ```
 GitHub issue (label: ready) ──poll──▶ queue (data/queue.json)
                                             │
-minifactory run-once (every 5 min via systemd timer)
+minifactory run-once (every 1 min via systemd timer or cron)
   1. shallow-clone repo on host → work/<id>
   2. agent works: stub runs in a disposable Docker sandbox (full egress,
      2 CPU / 4 GB), or a real agent CLI (claude/codex/opencode) runs on the
@@ -28,7 +30,7 @@ minifactory sync → merged = done / closed unmerged = failed
 
 ## Configuration
 
-`/root/minifactory-go/.env` (mode 600) is the **only** env file. Copy
+`<factory-dir>/.env` (mode 600) is the **only** env file. Copy
 `.env.example` (or run `minifactory init`) to create it. The knobs:
 
 - `GITHUB_TOKEN` — required. Clone/push/open PRs on github.com. Without it,
@@ -73,21 +75,58 @@ brand-new factory directory elsewhere.
 
 ## Security model
 
+- The factory never runs as root. The systemd service runs as the
+  unprivileged `minifactory` user with hardening (`NoNewPrivileges`,
+  `ProtectSystem=strict`, `PrivateTmp`); the cron path runs as whichever
+  user installed it.
 - Sandbox containers get full egress (agents need package registries) plus
   cpu/mem/pids caps and `--rm`. They are disposable: one per task.
 - **No secrets ever enter a container.** Tokens live only in `.env` (600)
   and are used host-side (git push, GitHub API, agent CLIs). They are never
   logged.
-- Agent CLIs run on the host as trusted tooling. For real-agent tasks the
-  runner re-runs the test suite inside a disposable sandbox, so generated
-  code executes only there — never on the host.
+- **Agent subprocesses get a scrubbed environment.** They inherit only a
+  whitelist (`PATH`, `HOME`, proxy vars, …) plus their own runner's token.
+  `GITHUB_TOKEN`, the other agents' tokens, and SSH/cloud credentials are
+  dropped — an agent executing untrusted task text cannot exfiltrate them.
+  Orchestrator git/API calls keep the full env they need.
+- Agent CLIs run fully non-interactive (opencode `--auto`, claude
+  `--dangerously-skip-permissions`, codex
+  `--dangerously-bypass-approvals-and-sandbox`) with stdin closed, so a
+  permission prompt can never hang a cycle.
+- For real-agent tasks the runner re-runs the test suite inside a disposable
+  sandbox, so generated code executes only there — never on the host.
 - The agent can only write its task workdir and push its own `factory/<id>`
   branch. Nothing merges without human review of the PR in GitHub.
+
+## Run without root
+
+No root, no systemd unit? Put the binary on your PATH (`~/.local/bin`),
+point it at a writable dir, and let `install-cron` manage a per-user
+crontab entry:
+
+```bash
+cp minifactory ~/.local/bin/
+minifactory init --dir ~/.minifactory
+minifactory install-cron --dir ~/.minifactory
+```
+
+This writes a marked crontab block that runs one `run-once` cycle every
+minute, guarded by `flock` (cron has no overlap protection of its own —
+two concurrent cycles would race on `data/queue.json`), with
+`MINIFACTORY_DIR` set. Useful flags: `--schedule "*/5 * * * *"` for a
+different cadence, `--force` to replace an existing entry, `--remove` to
+take it back out. Re-running `install-cron` without flags is a safe no-op
+when an entry already exists.
+
+Caveats vs the systemd path: no `ProtectSystem`/`NoNewPrivileges`
+hardening (those need a system unit), and the docker sandbox needs docker
+group membership. Everything else — queue, tokens, agent runners, the
+scrubbed agent env — works the same.
 
 ## Operate
 
 ```bash
-cd /root/minifactory-go
+cd /home/minifactory   # the factory dir (or ~/.minifactory for a rootless setup)
 ./minifactory issue --repo https://github.com/ORG/REPO.git --title "Fix X" --body "..."
 ./minifactory list
 ./minifactory logs <id>
@@ -106,6 +145,9 @@ cd /root/minifactory-go
                          # non-empty unless --force is given.
 ./minifactory init --force  # same, but proceed past live state (backups still made)
 ./minifactory init --dir /srv/factory2  # initialize a brand-new factory dir
+./minifactory install-cron [--dir path]  # manage a per-user crontab entry:
+                         # one flock-guarded run-once per minute (see
+                         # "Run without root"); --schedule, --remove, --force
 ./minifactory version    # print the factory version
 ```
 
@@ -192,6 +234,7 @@ for status comments and labels).
 - `pipeline.go` — the task subcommands (issue/run-once/sync/list/logs/poll/retry)
 - `doctor.go` — the `doctor` health-analysis subcommand
 - `init.go` — the `init` subcommand: runtime dirs, `.env` backup + fresh template, config check
+- `cron.go` — the `install-cron` subcommand: per-user crontab management for rootless scheduling
 - `worker/stub.go` — deterministic stub agent, compiled into the worker image
 - `worker/Dockerfile` — multi-stage: builds the stub, ships it in the
   python:3.12-slim + git + node + pytest toolchain image (`factory-worker-go`)
@@ -199,7 +242,7 @@ for status comments and labels).
 ## What's deliberately missing
 
 vs the earlier full scaffold (backed up at `/root/factory.bak` on the VPS):
-no web dashboard, no push webhooks (issues are polled every 5 min), one task
+no web dashboard, no push webhooks (issues are polled every 1 min), one task
 per cycle, no cost accounting, no auth layer. The part that matters — one
 isolated sandbox per agent, typed result handoff, human merges every PR — is
 all here.
