@@ -81,6 +81,12 @@ then atomically swaps it in — keeping the previous binary as
 - `AGENT` — optional. Force which runner handles tasks:
   `claude` | `codex` | `opencode` | `stub`. The chosen runner's token must
   be set (stub needs none); otherwise the factory warns and falls back.
+- `MAX_COST_USD_PER_TASK` — optional. Per-task spend cap in USD (e.g. 2.50).
+  When the sizer's or the agent's reported model cost exceeds it, the run
+  record is flagged `over_budget`, the PR body carries a warning, and
+  `minifactory report` lists it. Runs are never killed for going over
+  budget. Unset = off. (On a Claude subscription token the reported cost
+  is an API-equivalent cost, not a real bill.)
 
 Priority when several agent tokens are set and `AGENT` is unset:
 claude > codex > opencode. With none set, the deterministic stub runs — it makes a real code change + test,
@@ -174,6 +180,10 @@ cd /home/minifactory   # the factory dir (or ~/.minifactory for a rootless setup
 ./minifactory retry <id> [--force] # reclaim a stuck/failed task: re-queues
                          # failed or crashed (running) tasks; retries just
                          # the PR creation for pr_open tasks with no PR URL
+./minifactory report [--since 30d] [--task <id>] [--json]
+                         # run records: success rate, time to PR, slowest
+                         # stage, costs per agent, most expensive tasks;
+                         # --task shows every attempt stage by stage
 ./minifactory init       # (re)initialize this dir: runtime dirs, queue reset
                          # (existing data/queue.json backed up to
                          # queue.json.bak.<timestamp>), fresh .env
@@ -291,9 +301,11 @@ for status comments and labels).
 
 vs the earlier full scaffold (backed up at `/root/factory.bak` on the VPS):
 no web dashboard, no push webhooks (issues are polled every 1 min), one task
-per cycle, no cost accounting, no auth layer. The part that matters — one
-isolated sandbox per agent, typed result handoff, human merges every PR — is
-all here.
+per cycle, no auth layer. Run records (`data/runs/<id>/<attempt>.json`) keep
+per-stage timings and model costs; `minifactory report` aggregates them, and
+`MAX_COST_USD_PER_TASK` flags over-budget runs without killing them. The part
+that matters — one isolated sandbox per agent, typed result handoff, human
+merges every PR — is all here.
 
 ## Swap the sandbox later
 
