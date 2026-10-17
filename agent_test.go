@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -198,5 +199,52 @@ func TestCodexLoginMatches(t *testing.T) {
 	}
 	if codexLoginMatches("Logged in using an API key - sk-test-***12345", "short") {
 		t.Error("short token should never match")
+	}
+}
+
+func TestAgentCommandIsNonInteractive(t *testing.T) {
+	// Every runner must be fully non-interactive: a permission prompt or a
+	// stdin read is a hang until the agent timeout, because nobody can
+	// answer it in a factory run.
+	_, _, args, ok := agentCommand("claude", "do it", 30)
+	if !ok {
+		t.Fatal("claude: not ok")
+	}
+	if !slices.Contains(args, "--dangerously-skip-permissions") {
+		t.Errorf("claude args %v: missing --dangerously-skip-permissions", args)
+	}
+
+	_, _, args, ok = agentCommand("codex", "do it", 30)
+	if !ok {
+		t.Fatal("codex: not ok")
+	}
+	for _, want := range []string{"--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("codex args %v: missing %s", args, want)
+		}
+	}
+
+	_, _, args, ok = agentCommand("opencode", "do it", 30)
+	if !ok {
+		t.Fatal("opencode: not ok")
+	}
+	if !slices.Contains(args, "--auto") {
+		t.Errorf("opencode args %v: missing --auto", args)
+	}
+
+	if _, _, _, ok = agentCommand("bogus", "do it", 30); ok {
+		t.Error("bogus agent name: expected not ok")
+	}
+}
+
+func TestAgentCommandPromptPassedThrough(t *testing.T) {
+	for _, name := range []string{"claude", "codex", "opencode"} {
+		_, _, args, ok := agentCommand(name, "the task", 30)
+		if !ok {
+			t.Fatalf("%s: not ok", name)
+		}
+		if !slices.Contains(args, "the task") {
+			t.Errorf("%s args %v: prompt missing", name, args)
+		}
 	}
 }
