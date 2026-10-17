@@ -292,7 +292,25 @@ func cmdUpdate(args []string) int {
 	}
 	fmt.Println("update: checksum ok")
 
-	stageDir, err := os.MkdirTemp("", "minifactory-update-*")
+	// Resolve the running binary first: the extract is staged in its own
+	// directory so the final install is an atomic rename on the same
+	// filesystem. Staging in the system temp dir breaks when /tmp is a
+	// separate filesystem (e.g. tmpfs) — rename fails with
+	// "invalid cross-device link".
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "update: cannot locate running binary:", err)
+		return 1
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	stageDir, err := os.MkdirTemp(filepath.Dir(exe), "minifactory-update-*")
+	if err != nil {
+		// Fall back to the system temp dir; the rename below may fail
+		// across filesystems, in which case the old binary is kept.
+		stageDir, err = os.MkdirTemp("", "minifactory-update-*")
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "update:", err)
 		return 1
@@ -320,17 +338,10 @@ func cmdUpdate(args []string) int {
 	}
 	fmt.Println("update: new binary smoke-tested ok")
 
-	exe, err := os.Executable()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "update: cannot locate running binary:", err)
-		return 1
-	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
-	}
 	// Keep one backup of the previous binary, then atomically swap.
 	// Rename (not truncate) works even though this process is running
-	// from the old binary.
+	// from the old binary, and stays on one filesystem because the
+	// candidate was staged next to it.
 	backup := exe + ".bak"
 	os.Remove(backup)
 	if err := os.Rename(exe, backup); err != nil {
