@@ -8,6 +8,9 @@ work/
 # built binary (built on the deploy host via `go build -o minifactory .`)
 minifactory
 
+# release tarballs (built via scripts/build-release.sh, attached to GitHub releases)
+dist/
+
 # python bytecode (factory-managed repos must never commit these either)
 __pycache__/
 *.py[cod]
