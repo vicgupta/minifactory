@@ -1,9 +1,11 @@
 package main
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseMaxTurns(t *testing.T) {
@@ -246,5 +248,58 @@ func TestAgentCommandPromptPassedThrough(t *testing.T) {
 		if !slices.Contains(args, "the task") {
 			t.Errorf("%s args %v: prompt missing", name, args)
 		}
+	}
+}
+
+func TestAgentEnvDropsSecrets(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("HOME", "/home/minifactory")
+	t.Setenv("GITHUB_TOKEN", "gh-secret")
+	t.Setenv("GITHUB_REPO", "vicgupta/minifactory")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "claude-secret")
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+	os.Unsetenv("TERM")
+
+	env := agentEnv([]string{"CODEX_TOKEN=codex-secret"})
+	has := func(prefix string) bool {
+		return slices.ContainsFunc(env, func(kv string) bool {
+			return strings.HasPrefix(kv, prefix)
+		})
+	}
+	for _, secret := range []string{
+		"GITHUB_TOKEN=", "GITHUB_REPO=", "CLAUDE_CODE_OAUTH_TOKEN=",
+		"ANTHROPIC_API_KEY=", "SSH_AUTH_SOCK=", "AWS_SECRET_ACCESS_KEY=",
+	} {
+		if has(secret) {
+			t.Errorf("agentEnv leaked %q", secret)
+		}
+	}
+	for _, want := range []string{
+		"PATH=/usr/bin:/bin", "HOME=/home/minifactory",
+		"TERM=dumb", "CODEX_TOKEN=codex-secret",
+	} {
+		if !slices.Contains(env, want) {
+			t.Errorf("agentEnv missing %q (got %v)", want, env)
+		}
+	}
+}
+
+func TestRunAgentCmdScrubsEnv(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "super-secret")
+	t.Setenv("ANTHROPIC_API_KEY", "other-secret")
+	rc, out := runAgentCmd(10*time.Second, "", nil, "",
+		"sh", "-c", `echo "github=[${GITHUB_TOKEN-unset}]"; echo "anthropic=[${ANTHROPIC_API_KEY-unset}]"; echo "term=[$TERM]"`)
+	if rc != 0 {
+		t.Fatalf("runAgentCmd failed: rc=%d out=%q", rc, out)
+	}
+	for _, want := range []string{"github=[unset]", "anthropic=[unset]", "term=[dumb]"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("scrubbed child env missing %q (out=%q)", want, out)
+		}
+	}
+	if strings.Contains(out, "super-secret") || strings.Contains(out, "other-secret") {
+		t.Errorf("secret leaked into child output: %q", out)
 	}
 }
