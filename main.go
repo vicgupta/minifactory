@@ -114,14 +114,29 @@ func runCmd(timeout time.Duration, dir string, envAdd []string, name string, arg
 // parent's: an agent CLI that reads stdin (opencode's `run` does) would
 // otherwise block forever when the factory is started from a terminal.
 func runCmdWithStdin(timeout time.Duration, dir string, envAdd []string, stdin string, name string, args ...string) (int, string) {
+	return runCmdFull(timeout, dir, append(os.Environ(), envAdd...), stdin, name, args...)
+}
+
+// runAgentCmd is runCmdWithStdin for agent subprocesses: the child gets a
+// scrubbed environment (agentEnv) instead of the parent's full env, because
+// the agent executes untrusted task text and must not see the
+// orchestrator's secrets (GITHUB_TOKEN, other agents' tokens, ...).
+func runAgentCmd(timeout time.Duration, dir string, envAdd []string, stdin string, name string, args ...string) (int, string) {
+	return runCmdFull(timeout, dir, agentEnv(envAdd), stdin, name, args...)
+}
+
+// runCmdFull runs a command with a timeout and an explicit environment.
+// A nil env inherits the parent's (exec default); a non-nil env replaces
+// it entirely, so callers must include everything the child needs.
+func runCmdFull(timeout time.Duration, dir string, env []string, stdin string, name string, args ...string) (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	if envAdd != nil {
-		cmd.Env = append(os.Environ(), envAdd...)
+	if env != nil {
+		cmd.Env = env
 	}
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
