@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -171,6 +172,7 @@ func cmdIssue(args []string) int {
 	repo := flagVal(args, "repo")
 	title := flagVal(args, "title")
 	body := flagVal(args, "body")
+	bodyFile := flagVal(args, "body-file")
 	explicitIssue := false
 	issueNum := 0
 	if s := flagVal(args, "issue"); s != "" {
@@ -182,9 +184,32 @@ func cmdIssue(args []string) int {
 		issueNum = n
 		explicitIssue = true
 	}
+	// Flag-shape errors first: presence by occurrence, not value, since
+	// --body "" is a legitimate (empty) body.
+	if flagPresent(args, "body") && flagPresent(args, "body-file") {
+		fmt.Fprintln(os.Stderr, "issue: use only one of --body or --body-file")
+		return 2
+	}
 	if repo == "" || title == "" {
 		fmt.Fprintln(os.Stderr, "issue requires --repo and --title")
 		return 2
+	}
+	// Body resolution comes after required-flag validation: --body-file -
+	// reads stdin, and we must not block on a pipe/heredoc for an already
+	// invalid invocation. The body is used verbatim, no trimming.
+	if flagPresent(args, "body-file") {
+		var b []byte
+		var err error
+		if bodyFile == "-" {
+			b, err = io.ReadAll(os.Stdin)
+		} else {
+			b, err = os.ReadFile(bodyFile)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "issue: cannot read body file %q: %v\n", bodyFile, err)
+			return 2
+		}
+		body = string(b)
 	}
 	repoURL := normalizeRepoURL(repo)
 	tracef("issue: repo=%s title=%q", repoURL, title)
