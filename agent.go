@@ -245,10 +245,11 @@ func agentCommand(name, prompt string, maxTurns int) (cli, envKV string, args []
 	}
 }
 
-// runCLI runs a vendor agent CLI ON THE HOST as trusted tooling (it needs
-// its token + model API access). The token is mapped to the CLI's own env
-// var and never enters a sandbox container. The CLI edits files only inside
-// the task workdir.
+// runCLI runs a vendor agent CLI on the host with a scrubbed environment.
+// This is the fallback when the docker sandbox is unavailable
+// (agentSandboxOK): weaker isolation than a sandboxed run, but it keeps the
+// factory working where docker isn't installed. The token is mapped to the
+// CLI's own env var and never enters a sandbox container.
 func runCLI(t *Task, workdir, name string) bool {
 	prompt := agentPrompt(t)
 	cli, envKV, args, ok := agentCommand(name, prompt, maxTurns)
@@ -356,6 +357,9 @@ func runSizer(t *Task, workdir string) (*sizeVerdict, error) {
 		logf(t.ID, "sizer: skipping (agent is %s, sizing needs claude)", selectAgent())
 		return nil, nil
 	}
+	if agentSandboxOK() {
+		return runSizerSandboxed(t, workdir)
+	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		logf(t.ID, "sizer: `claude` not found on host PATH, skipping")
 		return nil, nil
@@ -365,25 +369,53 @@ func runSizer(t *Task, workdir string) (*sizeVerdict, error) {
 	args := []string{"-p", prompt, "--output-format", "json",
 		"--max-turns", strconv.Itoa(sizeMaxTurns),
 		"--allowed-tools", "Read,Write,Bash"}
-	logf(t.ID, "sizer: running `claude` (max-turns=%d, fit budget ~%d)", sizeMaxTurns, fitBudget)
+	logf(t.ID, "sizer: running `claude` on host (max-turns=%d, fit budget ~%d)", sizeMaxTurns, fitBudget)
 	rc, out := runAgentCmd(sizerTimeout, workdir, []string{"CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken}, "", "claude", args...)
 	logf(t.ID, "sizer: exit=%d\n%s", rc, tailStr(out, 1500))
 	if looksLikeAuthError(out) {
 		return nil, fmt.Errorf("agent authentication failed — check CLAUDE_CODE_OAUTH_TOKEN in .env")
 	}
+	return readSizeVerdict(t, workdir), nil
+}
+
+// runSizerSandboxed runs the sizing pass inside the disposable worker
+// sandbox: only the workdir is mounted and only the claude token is
+// injected, like the main agent run.
+func runSizerSandboxed(t *Task, workdir string) (*sizeVerdict, error) {
+	fitBudget := maxTurns * 2 / 3
+	prompt := sizePrompt(t, fitBudget)
+	staging, err := writeAgentStaging(t.ID, "CLAUDE_CODE_OAUTH_TOKEN="+claudeToken, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("sizer staging failed: %w", err)
+	}
+	defer os.RemoveAll(staging)
+	inner := fmt.Sprintf(`claude -p "$(cat /prompt)" --output-format json --max-turns %d --allowed-tools Read,Write,Bash`, sizeMaxTurns)
+	args := append(sandboxDockerBase(workdir, staging), "bash", "-c", inner)
+	logf(t.ID, "sizer: sandboxed `claude` (max-turns=%d, fit budget ~%d)", sizeMaxTurns, fitBudget)
+	rc, out := runCmd(sizerTimeout, "", nil, "docker", args...)
+	logf(t.ID, "sizer: exit=%d\n%s", rc, tailStr(out, 1500))
+	if looksLikeAuthError(out) {
+		return nil, fmt.Errorf("agent authentication failed — check CLAUDE_CODE_OAUTH_TOKEN in .env")
+	}
+	return readSizeVerdict(t, workdir), nil
+}
+
+// readSizeVerdict loads and validates size.json. A nil verdict means "fit":
+// sizing is advisory, never a gate.
+func readSizeVerdict(t *Task, workdir string) *sizeVerdict {
 	b, err := os.ReadFile(filepath.Join(workdir, "size.json"))
 	if err != nil {
 		logf(t.ID, "sizer: no size.json (%v) — treating as fit", err)
-		return nil, nil
+		return nil
 	}
 	sv := parseSizeVerdict(b)
 	if sv == nil {
 		logf(t.ID, "sizer: invalid size.json — treating as fit")
-		return nil, nil
+		return nil
 	}
 	logf(t.ID, "sizer: verdict=%s (%s)", sv.Verdict, sv.Reason)
 	if sv.Verdict != "split" {
-		return nil, nil
+		return nil
 	}
-	return sv, nil
+	return sv
 }
