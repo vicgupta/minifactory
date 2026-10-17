@@ -231,6 +231,10 @@ func usage() {
   init [--dir path] [--force]            initialize a factory dir (dirs, fresh .env
                                         with backup of the old one, config check;
                                         refuses live state without --force)
+  install-cron [--dir path] [--schedule "*/5 * * * *"] [--remove] [--force]
+                                        manage a per-user crontab entry running
+                                        one cycle on the schedule (default every
+                                        minute) — no root needed; guarded by flock
   version                             print the factory version
 
   global flags:
@@ -341,6 +345,8 @@ func main() {
 		rc = cmdDoctor(os.Args[2:])
 	case "init":
 		rc = cmdInit(os.Args[2:])
+	case "install-cron":
+		rc = cmdInstallCron(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("minifactory " + version)
 	default:
