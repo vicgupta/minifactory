@@ -42,7 +42,11 @@ func cleanPythonCache(dir string) {
 
 // ensureGitignore adds bytecode ignore rules to dir/.gitignore when they
 // are missing, so future test runs don't reintroduce the artifacts.
-func ensureGitignore(dir string) {
+// ensureGitignore makes sure dir/.gitignore covers Python bytecode
+// artifacts, creating or extending the file as needed. It reports whether
+// it modified the file, so callers can exclude .gitignore from
+// changed-file accounting (the agent didn't touch it).
+func ensureGitignore(dir string) bool {
 	rules := []string{"__pycache__/", "*.py[cod]", "*$py.class"}
 	path := filepath.Join(dir, ".gitignore")
 	existing, _ := os.ReadFile(path)
@@ -60,11 +64,11 @@ func ensureGitignore(dir string) {
 		}
 	}
 	if len(missing) == 0 {
-		return
+		return false
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return
+		return false
 	}
 	defer f.Close()
 	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
@@ -74,6 +78,77 @@ func ensureGitignore(dir string) {
 	for _, r := range missing {
 		f.WriteString(r + "\n")
 	}
+	return true
+}
+
+// factoryMetaFiles are orchestrator-owned files in the workdir that never
+// count as agent changes.
+var factoryMetaFiles = map[string]bool{
+	"task.json":   true,
+	"result.json": true,
+	"size.json":   true,
+}
+
+// cleanAgentPath normalizes a claimed file path for comparison: trims
+// whitespace, drops a leading ./, and cleans the result.
+func cleanAgentPath(p string) string {
+	p = strings.TrimSpace(p)
+	p = strings.TrimPrefix(p, "./")
+	return filepath.Clean(p)
+}
+
+// gitChangedFiles lists the files git sees changed in workdir: tracked
+// modifications against HEAD plus untracked files (minus the factory
+// metadata files, which the orchestrator owns). NUL-separated output keeps
+// unusual file names intact.
+func gitChangedFiles(workdir string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, args := range [][]string{
+		{"diff", "--name-only", "-z", "HEAD"},
+		{"ls-files", "--others", "--exclude-standard", "-z"},
+	} {
+		rc, sout := runCmd(time.Minute, workdir, nil, "git", args...)
+		if rc != 0 {
+			return nil, fmt.Errorf("git %s failed", strings.Join(args, " "))
+		}
+		for _, f := range strings.Split(sout, "\x00") {
+			f = strings.TrimSpace(f)
+			if f == "" || factoryMetaFiles[filepath.Clean(f)] {
+				continue
+			}
+			out[filepath.Clean(f)] = true
+		}
+	}
+	return out, nil
+}
+
+// changedFilesMatch verifies the agent's claimed changed_files against the
+// files git actually sees changed in the workdir. The sets must be equal
+// after normalization; when the orchestrator's own hygiene touched
+// .gitignore, that file is excluded from the git side. Anything else — a
+// missing entry, an extra entry, a non-list claim — fails the check.
+func changedFilesMatch(workdir string, claimed any, gitignoreTouched bool) bool {
+	list, ok := claimed.([]any)
+	if !ok {
+		return false
+	}
+	actual, err := gitChangedFiles(workdir)
+	if err != nil {
+		return false
+	}
+	if gitignoreTouched {
+		delete(actual, ".gitignore")
+	}
+	if len(list) != len(actual) {
+		return false
+	}
+	for _, f := range list {
+		s, ok := f.(string)
+		if !ok || !actual[cleanAgentPath(s)] {
+			return false
+		}
+	}
+	return true
 }
 
 func newID() string {
@@ -229,6 +304,14 @@ func cmdRunOnce() int {
 	agent := runAgent(t) // logs everything; hard failures surface via result.json
 	tracef("run-once: agent finished")
 
+	// Hygiene before verification: test runs and agents leave Python
+	// bytecode behind (__pycache__/, *.pyc), which would pollute the
+	// changed-files cross-check below. ensureGitignore may touch
+	// .gitignore; when it does, that file is excluded from the check.
+	cleanPythonCache(workdir)
+	gitignoreTouched := ensureGitignore(workdir)
+	logf(tid, "pre-commit hygiene: cleaned bytecode caches, ensured .gitignore")
+
 	// Validate the typed handoff: result.json {changed_files[], tests_passed, summary}.
 	tracef("run-once: validating result.json")
 	var res map[string]any
@@ -250,24 +333,27 @@ func cmdRunOnce() int {
 		logf(tid, "validation passed: %s", firstLine(s, 160))
 	}
 
-	// Trust boundary for real agents: generated code executes only in a
-	// disposable sandbox, never on the host.
+	// Cross-check the agent's claimed changed_files against what git sees.
+	// The agent ran across a trust boundary (sandbox, or the host
+	// fallback), so a dishonest handoff fails the task instead of opening
+	// a PR on it.
+	if !changedFilesMatch(workdir, res["changed_files"], gitignoreTouched) {
+		return failTask(t, "changed_files does not match git status — no PR opened")
+	}
+	logf(tid, "changed_files verified against git status")
+
+	// Trust boundary on the generated code: the agent's tests_passed claim
+	// is re-verified here, never trusted. The stub already ran its tests
+	// in-sandbox, so this is skipped for it.
 	tracef("run-once: running tests in sandbox")
 	if agent != "stub" && !runTestsInSandbox(t) {
 		return failTask(t, "sandbox test run failed — no PR opened")
 	}
 
 	// Factory metadata stays out of the commit.
-	for _, meta := range []string{"task.json", "result.json"} {
+	for _, meta := range []string{"task.json", "result.json", "size.json"} {
 		os.Remove(filepath.Join(workdir, meta))
 	}
-
-	// Pre-commit hygiene: test runs and agents leave Python bytecode
-	// behind (__pycache__/, *.pyc). Remove it and keep it ignored so it
-	// never enters a factory commit.
-	cleanPythonCache(workdir)
-	ensureGitignore(workdir)
-	logf(tid, "pre-commit hygiene: cleaned bytecode caches, ensured .gitignore")
 
 	branch := "factory/" + tid
 	tracef("run-once: committing and pushing branch %s", branch)
