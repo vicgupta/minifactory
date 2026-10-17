@@ -44,6 +44,40 @@ func agentToken(name string) string {
 	return ""
 }
 
+// agentEnvAllow is the whitelist of parent environment variables an agent
+// subprocess may inherit. Everything else is dropped — notably GITHUB_TOKEN,
+// GITHUB_REPO, the other agents' tokens, SSH agent sockets and cloud
+// credentials — because the agent executes untrusted task text and must not
+// be able to exfiltrate the orchestrator's secrets. The runner's own token
+// arrives via extra (see agentCommand).
+var agentEnvAllow = []string{
+	"PATH", "HOME", "USER", "LOGNAME", "SHELL",
+	"LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR",
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+	"http_proxy", "https_proxy", "no_proxy",
+	"TERM",
+}
+
+// agentEnv builds the scrubbed environment for an agent subprocess: the
+// whitelisted parent variables that are set, TERM=dumb when the parent has
+// no TERM, plus the runner-specific entries (its token mapping).
+func agentEnv(extra []string) []string {
+	env := make([]string, 0, len(agentEnvAllow)+len(extra)+1)
+	termSeen := false
+	for _, k := range agentEnvAllow {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+			if k == "TERM" {
+				termSeen = true
+			}
+		}
+	}
+	if !termSeen {
+		env = append(env, "TERM=dumb")
+	}
+	return append(env, extra...)
+}
+
 // agentWarned keeps the AGENT misconfiguration warning to one per
 // process — selectAgent is called from several places per run.
 var agentWarned = false
@@ -152,12 +186,12 @@ func ensureCodexLogin(id string) bool {
 		logf(id, "agent codex: `codex` not found on host PATH")
 		return false
 	}
-	if rc, out := runCmd(30*time.Second, "", nil, "codex", "login", "status"); rc == 0 && codexLoginMatches(out, codexToken) {
+	if rc, out := runAgentCmd(30*time.Second, "", nil, "", "codex", "login", "status"); rc == 0 && codexLoginMatches(out, codexToken) {
 		logf(id, "agent codex: already logged in")
 		return true
 	}
 	logf(id, "agent codex: registering CODEX_TOKEN via `codex login --with-api-key`")
-	rc, out := runCmdWithStdin(60*time.Second, "", nil, codexToken, "codex", "login", "--with-api-key")
+	rc, out := runAgentCmd(60*time.Second, "", nil, codexToken, "codex", "login", "--with-api-key")
 	if rc != 0 {
 		logf(id, "agent codex: login failed (exit=%d)\n%s", rc, tailStr(out, 1500))
 		return false
@@ -239,7 +273,7 @@ func runCLI(t *Task, workdir, name string) bool {
 	if name == "claude" {
 		logf(t.ID, "agent %s: max-turns=%d", name, maxTurns)
 	}
-	rc, out := runCmd(agentTimeout, workdir, []string{envKV}, cli, args...)
+	rc, out := runAgentCmd(agentTimeout, workdir, []string{envKV}, "", cli, args...)
 	logf(t.ID, "agent %s: exit=%d\n%s", name, rc, tailStr(out, 3000))
 	return true
 }
@@ -332,7 +366,7 @@ func runSizer(t *Task, workdir string) (*sizeVerdict, error) {
 		"--max-turns", strconv.Itoa(sizeMaxTurns),
 		"--allowed-tools", "Read,Write,Bash"}
 	logf(t.ID, "sizer: running `claude` (max-turns=%d, fit budget ~%d)", sizeMaxTurns, fitBudget)
-	rc, out := runCmd(sizerTimeout, workdir, []string{"CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken}, "claude", args...)
+	rc, out := runAgentCmd(sizerTimeout, workdir, []string{"CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken}, "", "claude", args...)
 	logf(t.ID, "sizer: exit=%d\n%s", rc, tailStr(out, 1500))
 	if looksLikeAuthError(out) {
 		return nil, fmt.Errorf("agent authentication failed — check CLAUDE_CODE_OAUTH_TOKEN in .env")
