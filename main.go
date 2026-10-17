@@ -27,6 +27,9 @@
 //	logs <id>                             show a task's log
 //	poll                                  enqueue new `ready`-labeled GitHub issues
 //	retry <id> [--force]                  reclaim a stuck/failed task
+//	report [--since Nd] [--task id] [--json]
+//	                                      run records: aggregate stats,
+//	                                      per-task attempts, costs, timings
 //	doctor [--json]                       detailed health analysis
 //	init [--dir path]                     initialize a factory dir: runtime dirs,
 //	                                      fresh .env (old one backed up), config check
@@ -65,6 +68,7 @@ var (
 	opencodeToken string
 	agentChoice   string            // optional AGENT override: claude|codex|opencode|stub
 	maxTurns      = defaultMaxTurns // agent turn budget per task (MAX_TURNS)
+	maxCostUSD    float64           // per-task spend cap (MAX_COST_USD_PER_TASK); 0 = off
 )
 
 // loadEnvFrom parses KEY=VALUE lines from dir/.env, skipping # comments
@@ -225,6 +229,9 @@ func usage() {
   logs <id>                             show a task's log
   poll                                  enqueue new 'ready'-labeled GitHub issues
   retry <id> [--force]                  reclaim a stuck/failed task
+  report [--since Nd] [--task id] [--json]
+                                        run records: aggregate stats, per-task
+                                        attempts, costs and stage timings
   doctor [--json] [--probe]           detailed health analysis of the factory
                                       (--probe spends one API call verifying
                                       the selected agent's token is accepted)
@@ -321,6 +328,7 @@ func main() {
 	opencodeToken = env["OPENCODE_TOKEN"]
 	agentChoice = strings.ToLower(strings.TrimSpace(env["AGENT"]))
 	maxTurns = parseMaxTurns(env["MAX_TURNS"])
+	maxCostUSD = parseCostUSD(env["MAX_COST_USD_PER_TASK"])
 
 	if len(os.Args) < 2 {
 		usage()
@@ -351,6 +359,8 @@ func main() {
 		rc = cmdPoll()
 	case "retry":
 		rc = cmdRetry(os.Args[2:])
+	case "report":
+		rc = cmdReport(os.Args[2:])
 	case "doctor":
 		rc = cmdDoctor(os.Args[2:])
 	case "init":
