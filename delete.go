@@ -13,7 +13,7 @@ import (
 // delete.go: `minifactory delete-all` tears down a factory installation.
 //
 // It removes, for the factory dir (--dir, default baseDir):
-//   - systemd units (minifactory/minifactory .service + .timer)
+//   - systemd units (minifactory/minfactory .service + .timer)
 //   - the service user's crontab block (from install-cron)
 //   - the nologin service user whose home is the factory dir
 //   - the dir's managed state: data/, logs/, work/, .env, .env.bak.*,
@@ -25,7 +25,9 @@ import (
 // euid == 0, otherwise printed as commands for the operator.
 
 // deleteUnitNames are the systemd unit base names delete-all looks for.
-var deleteUnitNames = []string{"minifactory", "minifactory"}
+// Both spellings: "minifactory" (the product) and "minfactory" (a live
+// install choice) — a teardown must not miss units over a vowel.
+var deleteUnitNames = []string{"minifactory", "minfactory"}
 
 // managedDeleteNames are the factory-dir entries delete-all removes.
 // Anything else in the dir (notably the binary and source checkouts) is
@@ -139,14 +141,22 @@ type deletePlan struct {
 	isRoot   bool
 }
 
-func planDeleteAll(dir string, keepUser bool, userOverride string) *deletePlan {
-	p := &deletePlan{dir: dir, keepUser: keepUser, isRoot: os.Geteuid() == 0}
-	for _, n := range deleteUnitNames {
-		if exists("/etc/systemd/system/"+n+".service") ||
-			exists("/etc/systemd/system/"+n+".timer") {
-			p.units = append(p.units, n)
+// findUnits returns the base names from names that have a .service or
+// .timer file in unitDir.
+func findUnits(unitDir string, names []string) []string {
+	var found []string
+	for _, n := range names {
+		if exists(filepath.Join(unitDir, n+".service")) ||
+			exists(filepath.Join(unitDir, n+".timer")) {
+			found = append(found, n)
 		}
 	}
+	return found
+}
+
+func planDeleteAll(dir string, keepUser bool, userOverride string) *deletePlan {
+	p := &deletePlan{dir: dir, keepUser: keepUser, isRoot: os.Geteuid() == 0}
+	p.units = findUnits("/etc/systemd/system", deleteUnitNames)
 	if userOverride != "" {
 		p.svcUser = userOverride
 	} else if !keepUser {
