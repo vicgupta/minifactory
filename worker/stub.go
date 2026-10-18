@@ -17,10 +17,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-const work = "/work"
+var work = "/work"
+
+// runTests runs the repo test suite; overridable in unit tests.
+var runTests = func() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "python3", "-m", "pytest", "-q")
+	cmd.Dir = work
+	return cmd.CombinedOutput()
+}
 
 func last(s string, n int) string {
 	if len(s) > n {
@@ -63,11 +73,21 @@ func run() int {
 		changed = append(changed, "test_addon.py")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "python3", "-m", "pytest", "-q")
-	cmd.Dir = work
-	out, err := cmd.CombinedOutput()
+	revision := false
+	if rb, rerr := os.ReadFile(filepath.Join(work, "review.json")); rerr == nil {
+		revision = true
+		revf := filepath.Join(work, "REVISION")
+		prev, _ := os.ReadFile(revf)
+		n := strings.Count(string(prev), "revision pass #") + 1
+		entry := fmt.Sprintf("revision pass #%d\nreview: %s\n", n, strings.TrimSpace(string(rb)))
+		if err := os.WriteFile(revf, append(prev, []byte(entry)...), 0644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		changed = append(changed, "REVISION")
+	}
+
+	out, err := runTests()
 	passed := err == nil
 
 	title := task["title"]
@@ -78,10 +98,14 @@ func run() int {
 	if !passed {
 		status = "FAILED"
 	}
+	kind := "stub agent"
+	if revision {
+		kind = "stub agent REVISION pass"
+	}
 	res, _ := json.Marshal(map[string]any{
 		"changed_files": changed,
 		"tests_passed":  passed,
-		"summary":       fmt.Sprintf("stub agent for '%s': pytest %s\n%s", title, status, last(string(out), 2000)),
+		"summary":       fmt.Sprintf("%s for '%s': pytest %s\n%s", kind, title, status, last(string(out), 2000)),
 	})
 	os.WriteFile(filepath.Join(work, "result.json"), res, 0644)
 
