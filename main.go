@@ -313,6 +313,10 @@ func usage() {
                                         nologin service user, and the dir's
                                         managed state (prints a plan first;
                                         --force executes)
+  rebuild-worker                        rebuild the worker image when it is
+                                        missing or stale, without touching
+                                        the queue or .env (init does this
+                                        too, but also resets factory state)
   version                             print the factory version
 
   global flags:
@@ -434,6 +438,8 @@ func main() {
 		rc = cmdUpdate(os.Args[2:])
 	case "delete-all":
 		rc = cmdDeleteAll(os.Args[2:])
+	case "rebuild-worker":
+		rc = cmdRebuildWorker(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("minifactory " + version)
 	default:

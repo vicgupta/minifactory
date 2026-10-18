@@ -201,6 +201,7 @@ func TestSandboxDockerBase(t *testing.T) {
 		"run", "--rm",
 		"--cpus", "2", "--memory", "4g", "--pids-limit", "256",
 		"--env-file", filepath.Join(staging, "token.env"),
+		"-e", "HOME=/tmp",
 		workdir + ":/work",
 		filepath.Join(staging, "prompt.txt") + ":/prompt:ro",
 		"-w", "/work", workerImage,

@@ -284,3 +284,20 @@ func (c *depChecker) ensureWorkerImage() depStatus {
 	c.printf("  warning: worker image build reported success but `docker image inspect %s` still fails", workerImage)
 	return depStatus{tool, depBuildFailed, "build ran but image still not present; re-run `minifactory init` or `docker build -t " + workerImage + " worker/` from a repo checkout"}
 }
+
+// cmdRebuildWorker rebuilds the worker image when it is missing or stale,
+// without touching the queue or .env — the surgical counterpart to
+// `minifactory init`, which also rebuilds the image but resets factory
+// state. Exits 1 when the image could not be brought current.
+func cmdRebuildWorker(args []string) int {
+	c := &depChecker{env: defaultDepEnv()}
+	if c.env.goos == "linux" {
+		c.plan = resolveLinuxPlan(c.env)
+	}
+	st := c.ensureWorkerImage()
+	fmt.Printf("worker image: %s — %s\n", st.State, st.Detail)
+	if st.outstanding() {
+		return 1
+	}
+	return 0
+}

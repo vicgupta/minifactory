@@ -25,6 +25,7 @@ func dockerBase(workdir string) []string {
 	}
 	args = append(args,
 		"--cpus", "2", "--memory", "4g", "--pids-limit", "256",
+		"-e", "HOME=/tmp",
 		"-v", workdir+":/work",
 		"-w", "/work", workerImage)
 	return args
@@ -150,6 +151,7 @@ func sandboxDockerBase(workdir, stagingDir string) []string {
 	args = append(args,
 		"--cpus", "2", "--memory", "4g", "--pids-limit", "256",
 		"--env-file", filepath.Join(stagingDir, "token.env"),
+		"-e", "HOME=/tmp",
 		"-v", workdir+":/work",
 		"-v", filepath.Join(stagingDir, "prompt.txt")+":/prompt:ro",
 		"-w", "/work",
