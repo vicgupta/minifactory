@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -190,5 +191,39 @@ func TestRetryNoSuchTask(t *testing.T) {
 
 	if rc := cmdRetry([]string{"missing"}); rc == 0 {
 		t.Fatal("expected failure for unknown id")
+	}
+}
+
+func TestCmdLogsTail(t *testing.T) {
+	defer testDirs(t)()
+	os.MkdirAll(logDir, 0o755)
+	os.WriteFile(filepath.Join(logDir, "short.log"), []byte("a\nb\n"), 0o644)
+	os.WriteFile(filepath.Join(logDir, "long.log"), []byte("1\n2\n3\n4\n5\n"), 0o644)
+	capture := func(args ...string) (string, int) {
+		old := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+		code := cmdLogs(args)
+		w.Close()
+		os.Stdout = old
+		b, _ := io.ReadAll(r)
+		return string(b), code
+	}
+	if out, c := capture("short", "--tail", "10"); c != 0 || out != "a\nb\n" {
+		t.Errorf("short: %q %d", out, c)
+	}
+	if out, c := capture("long", "--tail", "2"); c != 0 || out != "4\n5\n" {
+		t.Errorf("long: %q %d", out, c)
+	}
+	if out, c := capture("--tail=1", "long"); c != 0 || out != "5\n" {
+		t.Errorf("flag first: %q %d", out, c)
+	}
+	if out, c := capture("--tail", "3", "long"); c != 0 || out != "3\n4\n5\n" {
+		t.Errorf("flag first sep: %q %d", out, c)
+	}
+	for _, v := range []string{"abc", "0", "-1"} {
+		if out, c := capture("long", "--tail", v); c != 2 || out != "" {
+			t.Errorf("invalid %s: %q %d", v, out, c)
+		}
 	}
 }

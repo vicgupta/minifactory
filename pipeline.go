@@ -792,17 +792,61 @@ func cmdList(args []string) int {
 }
 
 func cmdLogs(args []string) int {
-	if len(args) < 1 {
+	tail := 0
+	hasTail := false
+	id := ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--tail":
+			hasTail = true
+			i++ // skip the value; flagVal reads it
+		case strings.HasPrefix(a, "--tail="):
+			hasTail = true
+		case strings.HasPrefix(a, "--"):
+		case id == "":
+			id = a
+		}
+	}
+	if id == "" {
 		fmt.Fprintln(os.Stderr, "logs requires an id")
 		return 2
 	}
-	b, err := os.ReadFile(filepath.Join(logDir, args[0]+".log"))
+	if hasTail {
+		n, err := strconv.Atoi(flagVal(args, "tail"))
+		if err != nil || n <= 0 {
+			fmt.Fprintln(os.Stderr, "--tail requires a positive integer")
+			return 2
+		}
+		tail = n
+	}
+	b, err := os.ReadFile(filepath.Join(logDir, id+".log"))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "no logs for "+args[0])
+		fmt.Fprintln(os.Stderr, "no logs for "+id)
 		return 1
+	}
+	if hasTail {
+		b = lastLines(b, tail)
 	}
 	fmt.Print(string(b))
 	return 0
+}
+
+// lastLines returns the last n lines of b; a trailing newline does not
+// count as an extra empty line.
+func lastLines(b []byte, n int) []byte {
+	end := len(b)
+	if end > 0 && b[end-1] == '\n' {
+		end--
+	}
+	for i := end - 1; i >= 0; i-- {
+		if b[i] == '\n' {
+			if n--; n == 0 {
+				return b[i+1:]
+			}
+		}
+	}
+	return b
 }
 
 // cmdPoll enqueues open issues labeled `ready` from GITHUB_REPO.
