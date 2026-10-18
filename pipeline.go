@@ -339,6 +339,9 @@ func cmdRunOnce() int {
 	if prURL != "" {
 		commentOnIssue(t, "minifactory: done \u2014 "+prURL+"\nTests passed in an isolated sandbox. Merge the PR to complete.\n"+rec.summaryLine())
 		labelIssueCreatedPR(t)
+		// The issue's tracking job is done: close it. The PR now carries
+		// the work to the human gate (merge/reject in GitHub).
+		setTaskIssueState(t, "closed")
 	}
 	setState(tid, "pr_open", branch, prURL)
 	logf(tid, "state -> pr_open (human gate: merge the PR in GitHub)")
@@ -639,6 +642,8 @@ func requeueTask(t *Task) {
 		return tasks, nil
 	})
 	labelIssueReady(t)
+	// Reopen the issue if it was closed when a previous PR opened.
+	setTaskIssueState(t, "open")
 	commentOnIssue(t, "minifactory: re-queued for another attempt.")
 }
 
@@ -653,6 +658,7 @@ func retryPRCreate(t *Task) int {
 	setState(t.ID, "pr_open", t.Branch, prURL)
 	labelIssueCreatedPR(t)
 	commentOnIssue(t, "minifactory: done — "+prURL+"\nTests passed in an isolated sandbox. Merge the PR to complete.")
+	setTaskIssueState(t, "closed")
 	fmt.Println("PR opened: " + prURL)
 	return 0
 }

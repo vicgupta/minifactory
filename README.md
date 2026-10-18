@@ -454,12 +454,12 @@ Issues move through five factory labels, and `poll` only picks up
    `factory-ready` label for `factory-inProgress`; any other labels are kept.
 4. When the agent's work passes sandbox tests and the branch is pushed, the
    issue's `factory-inProgress` label is swapped for `factory-completed`.
-5. When the PR opens, the label becomes `factory-createdPR` — the human gate.
-   The PR body ends with `Closes #N`, so merging auto-closes the issue, and
-   the next `sync` marks the task done and swaps the issue's
-   `factory-createdPR` label for `completed`. If the PR is closed without
-   merging, `sync` marks the task failed and swaps the label for
-   `factory-rejected` instead.
+5. When the PR opens, the issue is closed and its label becomes
+   `factory-createdPR` — the human gate. The PR body ends with `Closes #N`,
+   so the PR cross-links to the (already-closed) issue, and the next `sync`
+   marks the task done and swaps the issue's `factory-createdPR` label for
+   `completed`. If the PR is closed without merging, `sync` marks the task
+   failed and swaps the label for `factory-rejected` instead.
 
 `GITHUB_TOKEN` needs these scopes on the repo: Contents (read/write, for
 clone/push), Pull requests (write, to open PRs), Issues (read for poll, write

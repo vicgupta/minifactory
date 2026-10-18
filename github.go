@@ -425,6 +425,23 @@ func commentOnIssue(t *Task, body string) {
 	}
 }
 
+// setTaskIssueState opens or closes the task's GitHub issue, if the task
+// came from one. Best-effort: failures are logged, never fatal. Silent
+// no-op for manual issues.
+func setTaskIssueState(t *Task, state string) {
+	if t.IssueNumber == 0 || githubToken == "" {
+		return
+	}
+	org, repo, ok := parseGithubRepo(t.RepoURL)
+	if !ok {
+		return
+	}
+	if _, err := ghDo("PATCH", "/repos/"+org+"/"+repo+"/issues/"+strconv.Itoa(t.IssueNumber),
+		map[string]any{"state": state}); err != nil {
+		logf(t.ID, "WARNING: set issue state %s failed: %v", state, err)
+	}
+}
+
 // createPR opens a pull request for branch. Returns the PR URL, or "" when
 // the remote isn't GitHub or no token is configured (branch is pushed anyway).
 // When the run record is flagged over budget, the PR body carries a warning.
