@@ -159,6 +159,11 @@ func checkTokens() checkResult {
 	name, how := agentSelection()
 	lines = append(lines, "agent selected: "+name+" ("+how+")")
 	lines = append(lines, fmt.Sprintf("max turns (claude): %d", maxTurns))
+	if baseBranch != "" {
+		lines = append(lines, "base branch: "+baseBranch+" (BASE_BRANCH)")
+	} else {
+		lines = append(lines, "base branch: repo default")
+	}
 	if githubToken == "" {
 		status = statusFail
 		lines = append(lines, "-> GITHUB_TOKEN is required: poll, PRs and issue labels are all disabled without it")

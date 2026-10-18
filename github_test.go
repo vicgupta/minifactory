@@ -89,3 +89,21 @@ func TestGitCloneArgsAuthenticatesNormalizedURL(t *testing.T) {
 		t.Errorf("clone args missing auth header (token not attached): %q", joined)
 	}
 }
+
+func TestBaseBranchCloneArgs(t *testing.T) {
+	old := baseBranch
+	defer func() { baseBranch = old }()
+	for in, want := range map[string]string{"": "", "  develop ": "develop", "a b": "", "x..y": "", "release/1.0": "release/1.0"} {
+		if got := parseBaseBranch(in); got != want {
+			t.Errorf("parseBaseBranch(%q)=%q want %q", in, got, want)
+		}
+	}
+	baseBranch = ""
+	if j := strings.Join(gitCloneArgs("a/b", "/w"), " "); strings.Contains(j, "--branch") {
+		t.Errorf("unexpected --branch: %q", j)
+	}
+	baseBranch = "develop"
+	if j := strings.Join(gitCloneArgs("a/b", "/w"), " "); !strings.Contains(j, "--branch develop") {
+		t.Errorf("missing --branch develop: %q", j)
+	}
+}

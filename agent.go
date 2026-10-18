@@ -30,6 +30,24 @@ func parseMaxTurns(s string) int {
 	return n
 }
 
+// parseBaseBranch reads the BASE_BRANCH .env knob: a valid git branch name,
+// otherwise "" (repo default branch). Invalid values warn on stderr.
+func parseBaseBranch(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	bad := strings.HasPrefix(s, "-") || strings.HasPrefix(s, "/") || strings.HasSuffix(s, "/") ||
+		strings.HasSuffix(s, ".") || strings.HasSuffix(s, ".lock") || strings.Contains(s, "..") ||
+		strings.Contains(s, "//") || strings.Contains(s, "@{") || s == "@" ||
+		strings.ContainsAny(s, " ~^:?*[\\\t\n\r\x7f")
+	if bad {
+		fmt.Fprintf(os.Stderr, "warning: invalid BASE_BRANCH %q, using repo default branch\n", s)
+		return ""
+	}
+	return s
+}
+
 // agentToken returns the configured token for a named agent runner,
 // or "" when that runner needs none (stub) or has none configured.
 func agentToken(name string) string {

@@ -108,7 +108,11 @@ func normalizeRepoURL(s string) string {
 func gitCloneArgs(repoURL, workdir string) []string {
 	repoURL = normalizeRepoURL(repoURL)
 	args := append([]string{}, gitAuthArgs(repoURL)...)
-	args = append(args, "clone", "--depth", "1", repoURL, workdir)
+	args = append(args, "clone", "--depth", "1")
+	if baseBranch != "" {
+		args = append(args, "--branch", baseBranch)
+	}
+	args = append(args, repoURL, workdir)
 	return args
 }
 
@@ -451,16 +455,19 @@ func createPR(t *Task, branch string, rec *RunRecord) string {
 		logf(t.ID, "WARNING: no GitHub remote/token — branch pushed, open PR manually")
 		return ""
 	}
-	ib, err := ghDo("GET", "/repos/"+org+"/"+repo, nil)
-	if err != nil {
-		logf(t.ID, "WARNING: PR create failed (%v); branch pushed, open PR manually", err)
-		return ""
-	}
-	var info map[string]any
-	json.Unmarshal(ib, &info)
-	base, _ := info["default_branch"].(string)
+	base := baseBranch
 	if base == "" {
-		base = "main"
+		ib, err := ghDo("GET", "/repos/"+org+"/"+repo, nil)
+		if err != nil {
+			logf(t.ID, "WARNING: PR create failed (%v); branch pushed, open PR manually", err)
+			return ""
+		}
+		var info map[string]any
+		json.Unmarshal(ib, &info)
+		base, _ = info["default_branch"].(string)
+		if base == "" {
+			base = "main"
+		}
 	}
 	prBody := t.Body + "\n\n---\nBuilt by minifactory. Tests passed in an isolated sandbox."
 	if rec != nil && rec.OverBudget {

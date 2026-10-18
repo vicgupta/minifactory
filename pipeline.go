@@ -373,6 +373,9 @@ func runCloneStage(t *Task, rec *RunRecord, workdir string) error {
 	tracef("run-once: cloning %s", t.RepoURL)
 	rec.beginStage("clone")
 	if rc, out := runCmd(3*time.Minute, "", nil, "", "git", gitCloneArgs(t.RepoURL, workdir)...); rc != 0 {
+		if baseBranch != "" {
+			return fmt.Errorf("clone failed: BASE_BRANCH %q may not exist on the remote\n%s", baseBranch, tailStr(out, 2000))
+		}
 		return fmt.Errorf("clone failed\n%s", tailStr(out, 2000))
 	}
 	rec.endStage(true)

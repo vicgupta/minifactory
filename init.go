@@ -41,6 +41,9 @@ AGENT=
 # Raise for large tasks; each turn costs model usage.
 MAX_TURNS=
 
+# Optional. Branch to clone and open PRs against (default: repo default branch).
+BASE_BRANCH=
+
 # Optional. Per-task spend cap in USD (e.g. 2.50). When the sizer's or the
 # agent's reported model cost exceeds it, the run record is flagged
 # over_budget, the PR body carries a warning, and `+"`minifactory report`"+`
