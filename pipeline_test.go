@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 // testDirs redirects the factory's data/work/log dirs into a temp dir so
@@ -190,5 +193,44 @@ func TestRetryNoSuchTask(t *testing.T) {
 
 	if rc := cmdRetry([]string{"missing"}); rc == 0 {
 		t.Fatal("expected failure for unknown id")
+	}
+}
+
+func TestCmdShow(t *testing.T) {
+	defer testDirs(t)()
+	os.MkdirAll(logDir, 0755)
+	seedTask(t, Task{ID: "full1", RepoURL: "https://github.com/ORG/REPO.git", Title: "Add backoff",
+		Body: "the spec\nline2", State: "split", Branch: "factory/full1", PRURL: "https://github.com/ORG/REPO/pull/57",
+		CreatedAt: float64(time.Now().Add(-3 * time.Hour).Unix()), IssueNumber: 42, Children: []int{43, 44}})
+	seedTask(t, Task{ID: "man1", State: "queued"})
+	os.WriteFile(filepath.Join(logDir, "full1.log"), make([]byte, 2048), 0644)
+
+	var rc int
+	out := captureStdout(t, func() { rc = cmdShow([]string{"full1"}) })
+	if rc != 0 {
+		t.Fatalf("rc=%d", rc)
+	}
+	for _, want := range []string{"issue:    #42  https://github.com/ORG/REPO/issues/42", "children: #43, #44",
+		"(2.0 KB)", "3h0m ago", "\nbody:\nthe spec\nline2\n", "branch:   factory/full1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	out = captureStdout(t, func() { rc = cmdShow([]string{"man1"}) })
+	for _, want := range []string{"issue:    (manual)", "repo:     (none)", "pr:       (none)", "children: (none)", "(no log yet)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	out = captureStdout(t, func() { rc = cmdShow([]string{"full1", "--json"}) })
+	var got Task
+	if err := json.Unmarshal([]byte(out), &got); err != nil || got.ID != "full1" || got.IssueNumber != 42 {
+		t.Errorf("bad json %v: %s", err, out)
+	}
+	if rc := cmdShow(nil); rc != 2 {
+		t.Errorf("missing id rc=%d", rc)
+	}
+	if rc := cmdShow([]string{"nope"}); rc != 1 {
+		t.Errorf("unknown id rc=%d", rc)
 	}
 }

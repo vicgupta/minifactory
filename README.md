@@ -353,6 +353,7 @@ scrubbed agent env — works the same.
 cd /home/minifactory   # the factory dir (or ~/.minifactory, the default when no ./.env or override)
 ./minifactory issue --repo https://github.com/ORG/REPO.git --title "Fix X" --body "..."
 ./minifactory list
+./minifactory show <id> [--json]
 ./minifactory logs <id>
 ./minifactory run-once   # normally the systemd timer does this
 ./minifactory sync
