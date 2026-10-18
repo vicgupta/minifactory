@@ -11,7 +11,14 @@ RUN CGO_ENABLED=0 go build -trimpath -o /stub_agent stub.go
 
 FROM python:3.12-slim
 
-LABEL minifactory.worker-version="2"
+LABEL minifactory.worker-version="3"
+
+# Go toolchain: copy from the builder stage so agents can compile and run
+# `go test ./...` for Go repositories (the factory is itself a Go repo).
+# The builder stage is golang:1.26-bookworm (same Debian base), so the
+# binaries are ABI-compatible.
+COPY --from=build /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:$PATH"
 
 # Node 24 LTS via NodeSource: Debian's nodejs is too old for the agent
 # CLIs (@anthropic-ai/claude-code requires node >=22.0.0). NodeSource's

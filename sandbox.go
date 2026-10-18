@@ -227,6 +227,9 @@ func detectTestCmd(workdir string) string {
 	if _, err := os.Stat(filepath.Join(workdir, "package.json")); err == nil {
 		return "npm test --silent"
 	}
+	if _, err := os.Stat(filepath.Join(workdir, "go.mod")); err == nil {
+		return "go test ./..."
+	}
 	return "python3 -m pytest -q"
 }
 
@@ -256,6 +259,11 @@ func hasTestSuite(workdir string) bool {
 			}
 		}
 	}
+	// Go: a go.mod means `go test ./...` is a valid verification — it
+	// compile-checks every package even when no *_test.go files exist yet.
+	if _, err := os.Stat(filepath.Join(workdir, "go.mod")); err == nil {
+		return true
+	}
 	// Python: pytest config files, a tox config, or a tests directory imply
 	// a suite even when no test files are visible yet. pyproject.toml only
 	// counts when it actually configures pytest (it is often just build
@@ -278,7 +286,7 @@ func hasTestSuite(workdir string) bool {
 			return true
 		}
 	}
-	// Python: any test_*.py or *_test.py file.
+	// Python: any test_*.py or *_test.py file; Go: any *_test.go file.
 	found := false
 	filepath.WalkDir(workdir, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil || found {
@@ -293,7 +301,8 @@ func hasTestSuite(workdir string) bool {
 		}
 		n := d.Name()
 		if strings.HasPrefix(n, "test_") && strings.HasSuffix(n, ".py") ||
-			strings.HasSuffix(n, "_test.py") {
+			strings.HasSuffix(n, "_test.py") ||
+			strings.HasSuffix(n, "_test.go") {
 			found = true
 		}
 		return nil

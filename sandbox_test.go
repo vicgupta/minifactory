@@ -41,6 +41,9 @@ func TestHasTestSuite(t *testing.T) {
 		{"tests directory implies suite", []string{"tests/"}, true},
 		{"package.json with test script", []string{"package.json"}, true},
 		{"factory.json test command is authoritative", []string{"factory.json"}, true},
+		{"go.mod implies suite", []string{"go.mod"}, true},
+		{"go test file", []string{"foo_test.go"}, true},
+		{"go repo with no tests still has go.mod", []string{"go.mod", "main.go"}, true},
 	}
 	// Write meaningful contents for the config-file cases.
 	write := map[string]string{
@@ -75,6 +78,38 @@ func TestHasTestSuite(t *testing.T) {
 				t.Errorf("hasTestSuite() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDetectTestCmd(t *testing.T) {
+	cases := []struct {
+		name  string
+		files []string
+		want  string
+	}{
+		{"go.mod means go test", []string{"go.mod", "main.go"}, "go test ./..."},
+		{"package.json means npm test", []string{"package.json"}, "npm test --silent"},
+		{"no markers defaults to pytest", []string{"README.md"}, "python3 -m pytest -q"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, f := range tc.files {
+				if err := os.WriteFile(filepath.Join(dir, f), []byte("# x\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := detectTestCmd(dir); got != tc.want {
+				t.Errorf("detectTestCmd() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	// factory.json is authoritative over layout.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "factory.json"), []byte(`{"test": "make check"}`), 0o644)
+	if got := detectTestCmd(dir); got != "make check" {
+		t.Errorf("detectTestCmd() with factory.json = %q, want %q", got, "make check")
 	}
 }
 

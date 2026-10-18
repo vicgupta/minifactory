@@ -38,10 +38,10 @@ func TestWorkerImageStaleLogic(t *testing.T) {
 	if workerImageVersionStale(workerImageVersion) {
 		t.Error("current version should not be stale")
 	}
-	if workerImageVersion != "2" {
-		t.Errorf("workerImageVersion = %q, want %q (label/constant must be bumped together)", workerImageVersion, "2")
+	if workerImageVersion != "3" {
+		t.Errorf("workerImageVersion = %q, want %q (label/constant must be bumped together)", workerImageVersion, "3")
 	}
-	for _, v := range []string{"", "0", "1", "999"} {
+	for _, v := range []string{"", "0", "1", "2", "999"} {
 		if !workerImageVersionStale(v) {
 			t.Errorf("version %q should be stale", v)
 		}
@@ -80,8 +80,12 @@ func TestEmbeddedDockerfileNode24AndLabel(t *testing.T) {
 	for _, want := range []string{
 		"https://deb.nodesource.com/setup_24.x",
 		`LABEL ` + workerImageLabel + `="` + workerImageVersion + `"`,
-		`LABEL minifactory.worker-version="2"`,
+		`LABEL minifactory.worker-version="3"`,
 		"@anthropic-ai/claude-code",
+		// Go toolchain is copied from the builder stage so agents can
+		// compile and run `go test ./...` for Go repositories.
+		"COPY --from=build /usr/local/go /usr/local/go",
+		"ENV PATH=\"/usr/local/go/bin:$PATH\"",
 		// Exactly the two packages npm flagged as having postinstall
 		// scripts, scoped to the one global install (npm's own suggestion).
 		"npm install -g --allow-scripts=@anthropic-ai/claude-code,opencode-ai @anthropic-ai/claude-code @openai/codex opencode-ai",
