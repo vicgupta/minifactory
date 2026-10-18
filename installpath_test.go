@@ -127,7 +127,7 @@ func TestLegacyBinaryWarning(t *testing.T) {
 func TestCronBlockUsesAbsoluteUserLocalPath(t *testing.T) {
 	exe := defaultBinaryPath("/home/u")
 	b := cronBlock("* * * * *", exe, "/home/u/.minifactory")
-	if !strings.Contains(b, "/home/u/.local/bin/minifactory run-once") {
+	if !strings.Contains(b, "/home/u/.local/bin/minifactory auto") {
 		t.Errorf("cron block must call the absolute user-local binary:\n%s", b)
 	}
 	if strings.Contains(b, "/usr/local/bin") {

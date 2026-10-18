@@ -52,7 +52,7 @@ func TestCheckEnvFor(t *testing.T) {
 	baseDir = "/tmp/nonexistent-dir"
 
 	envFound = false
-	for _, cmd := range []string{"poll", "run-once", "sync"} {
+	for _, cmd := range []string{"poll", "run-once", "sync", "auto"} {
 		if err := checkEnvFor(cmd); err == nil {
 			t.Errorf("checkEnvFor(%q) with no .env: expected error", cmd)
 		}
@@ -64,7 +64,7 @@ func TestCheckEnvFor(t *testing.T) {
 	}
 
 	envFound = true
-	for _, cmd := range []string{"poll", "run-once", "sync", "list", "retry"} {
+	for _, cmd := range []string{"poll", "run-once", "sync", "auto", "list", "retry"} {
 		if err := checkEnvFor(cmd); err != nil {
 			t.Errorf("checkEnvFor(%q) with .env: unexpected error: %v", cmd, err)
 		}

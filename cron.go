@@ -48,12 +48,12 @@ func validCronSchedule(s string) bool {
 }
 
 // cronBlock builds the managed crontab block: marker, the factory dir,
-// and the cycle command guarded by flock.
+// and the full cycle command (auto) guarded by flock.
 func cronBlock(schedule, exe, dir string) string {
 	var b strings.Builder
 	b.WriteString(cronMarker + "\n")
 	b.WriteString("MINIFACTORY_DIR=" + shellQuote(dir) + "\n")
-	fmt.Fprintf(&b, "%s flock -n %s %s run-once\n",
+	fmt.Fprintf(&b, "%s flock -n %s %s auto\n",
 		schedule, shellQuote(filepath.Join(dir, "cycle.lock")), shellQuote(exe))
 	return b.String()
 }

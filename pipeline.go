@@ -937,3 +937,27 @@ func hasStateFlag(args []string) bool {
 	}
 	return false
 }
+
+// cmdAuto runs a full factory cycle: poll for new issues, then drain the
+// queue — run-once for every queued task, syncing after each run to pick
+// up merged/closed PRs. A final sync catches PRs already open when the
+// cycle began. This is the cron/timer entry point: it supersedes the bare
+// `run-once` the cron block used to run, which skipped poll and sync.
+func cmdAuto() int {
+	cmdPoll()
+
+	for {
+		tasks, err := listTasks()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "auto:", err)
+			return 1
+		}
+		if pickNextTask(tasks) == nil {
+			break
+		}
+		cmdRunOnce()
+		cmdSync()
+	}
+	cmdSync()
+	return 0
+}

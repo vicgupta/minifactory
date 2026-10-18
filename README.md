@@ -334,10 +334,13 @@ minifactory init --dir ~/.minifactory
 minifactory install-cron --dir ~/.minifactory
 ```
 
-This writes a marked crontab block that runs one `run-once` cycle every
+This writes a marked crontab block that runs one `auto` cycle every
 minute, guarded by `flock` (cron has no overlap protection of its own —
 two concurrent cycles would race on `data/queue.json`), with
-`MINIFACTORY_DIR` set. Useful flags: `--schedule "*/5 * * * *"` for a
+`MINIFACTORY_DIR` set. `auto` is the full cycle: it polls for new
+`factory-ready` issues, runs `run-once` for every queued task, and syncs
+after each run to pick up merged/closed PRs. Useful flags: `--schedule
+"*/5 * * * *"` for a
 different cadence, `--force` to replace an existing entry, `--remove` to
 take it back out. Re-running `install-cron` without flags is a safe no-op
 when an entry already exists.
@@ -354,7 +357,9 @@ cd /home/minifactory   # the factory dir (or ~/.minifactory, the default when no
 ./minifactory issue --repo https://github.com/ORG/REPO.git --title "Fix X" --body "..."
 ./minifactory list                  # --json; --state failed,pr_open filters by state
 ./minifactory logs <id>
-./minifactory run-once   # normally the systemd timer does this
+./minifactory run-once   # run the next queued task end-to-end
+./minifactory auto       # full cycle: poll, then run-once for every queued
+                         # task, syncing after each (the cron/timer entry point)
 ./minifactory sync
 ./minifactory poll
 ./minifactory retry <id> [--force] # reclaim a stuck/failed task: re-queues

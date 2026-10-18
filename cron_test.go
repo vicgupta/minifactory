@@ -24,7 +24,7 @@ func TestCronBlock(t *testing.T) {
 		cronMarker,
 		"MINIFACTORY_DIR=/home/u/.minifactory",
 		"* * * * * flock -n /home/u/.minifactory/cycle.lock",
-		"/home/u/.local/bin/minifactory run-once",
+		"/home/u/.local/bin/minifactory auto",
 	} {
 		if !strings.Contains(b, want) {
 			t.Errorf("cronBlock missing %q:\n%s", want, b)
@@ -37,7 +37,7 @@ func TestCronBlock(t *testing.T) {
 
 func TestCronBlockQuotesSpaces(t *testing.T) {
 	b := cronBlock("* * * * *", "/home/my user/bin/mf", "/home/my user/mf")
-	if !strings.Contains(b, "'/home/my user/bin/mf' run-once") {
+	if !strings.Contains(b, "'/home/my user/bin/mf' auto") {
 		t.Errorf("exe path with spaces not quoted:\n%s", b)
 	}
 }

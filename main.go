@@ -281,6 +281,8 @@ func usage() {
                          issue on the repo and labels it factory-ready,
                          unless --issue N links an existing one
   run-once                              run the next queued task end-to-end
+  auto                                  full cycle: poll, then run-once for every
+                                        queued task, syncing after each run
   sync                                  update pr_open tasks from GitHub PR state
   list [--json] [--state S[,S...]]       show tasks
   logs <id>                             show a task's log
@@ -329,7 +331,7 @@ func usage() {
 // missing or unreadable; everything else is local/diagnostic and stays usable.
 func checkEnvFor(cmd string) error {
 	switch cmd {
-	case "poll", "run-once", "sync":
+	case "poll", "run-once", "sync", "auto":
 		if !envFound {
 			return fmt.Errorf("no .env found at %s; run `minifactory init` to create one",
 				resolvedEnvPath())
@@ -416,6 +418,8 @@ func main() {
 		rc = cmdIssue(os.Args[2:])
 	case "run-once":
 		rc = cmdRunOnce()
+	case "auto":
+		rc = cmdAuto()
 	case "sync":
 		rc = cmdSync()
 	case "list":
