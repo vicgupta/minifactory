@@ -22,6 +22,7 @@ minifactory run-once (every 1 min via systemd timer or cron)
      cross-checks changed_files against git status, and for real agents
      re-runs the test suite inside a sandbox
   4. commit + push branch factory/<id>, open PR via GitHub API
+     (body includes the agent's summary and changed files)
                                             │
                                      state: pr_open
                                             │
