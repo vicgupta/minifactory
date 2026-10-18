@@ -203,11 +203,12 @@ func ensureCodexLogin(id string) bool {
 // agentPrompt is the contract handed to a real agent CLI: implement the
 // task, run the tests, and write result.json. Commits/PRs stay with the
 // orchestrator.
-func agentPrompt(t *Task) string {
+func agentPrompt(t *Task, workdir string) string {
 	body := t.Body
 	if body == "" {
 		body = "(no details)"
 	}
+	testCmd := detectTestCmd(workdir)
 	return fmt.Sprintf(`You are working on a software task. Your working directory is the repo root.
 Task: %s
 Details: %s
@@ -215,16 +216,23 @@ Details: %s
 The task is also in task.json in the repo root.
 Rules:
 1. Explore the repo, then implement the change the task describes. Keep it minimal.
-2. Run the repo's test suite (e.g. `+"`python3 -m pytest -q`"+` or `+"`npm test`"+`) until it passes.
+2. Run the repo's test suite until it passes. The canonical test command for this
+   repo is:
+       %s
+   Run exactly that command to judge tests_passed. Do NOT run any other scripts,
+   especially integration or smoke tests under scripts/ (they need a deployed
+   factory, docker, or a pre-built binary and are expected to fail in this
+   sandbox) — ignore them.
 3. Write result.json in the repo root with exactly this shape:
    {"changed_files": ["path", ...], "tests_passed": true, "summary": "one line"}
    changed_files must list EVERY file you changed, as a repo-root-relative
    path (no ./ prefix, no absolute paths) exactly as `+"`git status --porcelain`"+` reports it.
    Run `+"`git status --porcelain`"+` and copy its paths. Do NOT list result.json,
-   task.json or size.json. Set tests_passed honestly — false if anything fails.
+   task.json or size.json. Set tests_passed honestly — false only if the
+   canonical test command above fails.
 4. Do NOT commit, push, or open pull requests — the orchestrator handles that.
 5. Do NOT touch anything outside the working directory.
-`, t.Title, body)
+`, t.Title, body, testCmd)
 }
 
 // agentCommand builds the host-side CLI invocation for an agent runner.
@@ -255,7 +263,7 @@ func agentCommand(name, prompt string, maxTurns int) (cli, envKV string, args []
 // CLI's own env var and never enters a sandbox container. Returns the
 // command's full stdout (for usage parsing) and whether it exited zero.
 func runCLI(t *Task, workdir, name string) (string, bool) {
-	prompt := agentPrompt(t)
+	prompt := agentPrompt(t, workdir)
 	cli, envKV, args, ok := agentCommand(name, prompt, maxTurns)
 	if !ok {
 		return "", false

@@ -200,7 +200,7 @@ func sandboxInnerCommand(name string, maxTurns int) string {
 // staging failure it falls back to the host path rather than failing the
 // task outright.
 func runAgentSandboxed(t *Task, workdir, name string) (string, bool, bool) {
-	prompt := agentPrompt(t)
+	prompt := agentPrompt(t, workdir)
 	staging, err := writeAgentStaging(t.ID, agentTokenEnv(name)+"="+agentToken(name), prompt)
 	if err != nil {
 		logf(t.ID, "agent %s: staging failed (%v) — falling back to host", name, err)
