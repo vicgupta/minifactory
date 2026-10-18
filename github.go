@@ -15,7 +15,9 @@ import (
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // ghDo calls the GitHub REST API with the Bearer token. Returns the raw body.
-func ghDo(method, path string, data any) ([]byte, error) {
+var ghDo = ghDoHTTP
+
+func ghDoHTTP(method, path string, data any) ([]byte, error) {
 	if githubToken == "" {
 		return nil, fmt.Errorf("GITHUB_TOKEN not set")
 	}
