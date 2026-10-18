@@ -41,6 +41,10 @@ AGENT=
 # Raise for large tasks; each turn costs model usage.
 MAX_TURNS=
 
+# Optional. Wall-clock limit for one agent run, as a Go duration
+# (90s, 30m, 1h30m). Default 20m.
+AGENT_TIMEOUT=
+
 # Optional. Per-task spend cap in USD (e.g. 2.50). When the sizer's or the
 # agent's reported model cost exceeds it, the run record is flagged
 # over_budget, the PR body carries a warning, and `+"`minifactory report`"+`
@@ -180,6 +184,7 @@ func initFactoryWithOptions(dir string, skipDeps, skipPath bool) int {
 		fmt.Printf("  %s: %s\n", k, onOff(cfg[k] != ""))
 	}
 	fmt.Printf("  MAX_TURNS: %d\n", parseMaxTurns(cfg["MAX_TURNS"]))
+	fmt.Printf("  AGENT_TIMEOUT: %s\n", parseAgentTimeout(cfg["AGENT_TIMEOUT"]))
 	agent := strings.ToLower(strings.TrimSpace(cfg["AGENT"]))
 	if agent == "" {
 		fmt.Println("  AGENT: unset (token priority)")

@@ -249,6 +249,9 @@ resolved `.env` path it is using. The knobs:
   be installed.
 - `MAX_TURNS` — optional. Turn budget per task for the claude runner
   (default 30). Raise for large tasks; each turn costs model usage.
+- `AGENT_TIMEOUT` — optional. Wall-clock limit for one agent run, as a Go
+  duration (`90s`, `30m`, `1h30m`). Default `20m`; invalid or non-positive
+  values warn and fall back.
 - `AGENT` — optional. Force which runner handles tasks:
   `claude` | `codex` | `opencode` | `stub`. The chosen runner's token must
   be set (stub needs none); otherwise the factory warns and falls back.

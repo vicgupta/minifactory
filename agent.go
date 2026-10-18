@@ -30,6 +30,25 @@ func parseMaxTurns(s string) int {
 	return n
 }
 
+// defaultAgentTimeout is the wall-clock limit for one agent run when
+// AGENT_TIMEOUT is unset or invalid.
+const defaultAgentTimeout = 20 * time.Minute
+
+// parseAgentTimeout reads the AGENT_TIMEOUT .env knob: a positive Go
+// duration, otherwise the default. Invalid values warn on stderr and fall back.
+func parseAgentTimeout(s string) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return defaultAgentTimeout
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		fmt.Fprintf(os.Stderr, "warning: invalid AGENT_TIMEOUT %q, using default %s\n", s, defaultAgentTimeout)
+		return defaultAgentTimeout
+	}
+	return d
+}
+
 // agentToken returns the configured token for a named agent runner,
 // or "" when that runner needs none (stub) or has none configured.
 func agentToken(name string) string {

@@ -303,3 +303,24 @@ func TestRunAgentCmdScrubsEnv(t *testing.T) {
 		t.Errorf("secret leaked into child output: %q", out)
 	}
 }
+
+func TestParseAgentTimeout(t *testing.T) {
+	cases := []struct {
+		name, in string
+		want     time.Duration
+	}{
+		{"empty uses default", "", defaultAgentTimeout},
+		{"45m", "45m", 45 * time.Minute},
+		{"90s", "90s", 90 * time.Second},
+		{"invalid falls back", "abc", defaultAgentTimeout},
+		{"zero falls back", "0", defaultAgentTimeout},
+		{"negative falls back", "-5m", defaultAgentTimeout},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseAgentTimeout(tc.in); got != tc.want {
+				t.Errorf("parseAgentTimeout(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
