@@ -66,7 +66,7 @@ func TestFactoryLabelNames(t *testing.T) {
 		}
 	}
 	// The lifecycle order init ensures must match the transition order.
-	for i, name := range []string{labelReady, labelInProgress, labelCompleted, labelCreatedPR, labelDone, labelRejected} {
+	for i, name := range []string{labelReady, labelInProgress, labelCompleted, labelCreatedPR, labelDone, labelRejected, labelRevise} {
 		if factoryLabels[i] != name {
 			t.Errorf("factoryLabels[%d] = %q, want %q", i, factoryLabels[i], name)
 		}
