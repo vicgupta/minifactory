@@ -791,6 +791,105 @@ func cmdList(args []string) int {
 	return 0
 }
 
+// readTasksReadOnly loads the queue without taking the lock or rewriting
+// the file (listTasks goes through withStore, which persists on every call).
+func readTasksReadOnly() ([]Task, error) {
+	b, err := os.ReadFile(storePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var tasks []Task
+	if len(strings.TrimSpace(string(b))) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal(b, &tasks); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+// cmdShow prints everything the queue knows about one task. Read-only.
+func cmdShow(args []string) int {
+	id := ""
+	for _, a := range args {
+		if !strings.HasPrefix(a, "--") {
+			id = a
+			break
+		}
+	}
+	if id == "" {
+		fmt.Fprintln(os.Stderr, "show requires an id")
+		return 2
+	}
+	tasks, err := readTasksReadOnly()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	var t *Task
+	for i := range tasks {
+		if tasks[i].ID == id {
+			t = &tasks[i]
+			break
+		}
+	}
+	if t == nil {
+		fmt.Fprintln(os.Stderr, "no task "+id)
+		return 1
+	}
+	if hasFlag(args, "json") {
+		b, _ := json.MarshalIndent(t, "", " ")
+		fmt.Println(string(b))
+		return 0
+	}
+	or := func(s, def string) string {
+		if s == "" {
+			return def
+		}
+		return s
+	}
+	issue := "(manual)"
+	if t.IssueNumber != 0 {
+		issue = fmt.Sprintf("#%d", t.IssueNumber)
+		if org, repo, ok := parseGithubRepo(t.RepoURL); ok {
+			issue += fmt.Sprintf("  https://github.com/%s/%s/issues/%d", org, repo, t.IssueNumber)
+		}
+	}
+	created := "(unknown)"
+	if t.CreatedAt != 0 {
+		ct := time.Unix(int64(t.CreatedAt), 0)
+		created = fmt.Sprintf("%s (%s ago)", ct.Format("2006-01-02 15:04"), shortDur(time.Since(ct)))
+	}
+	children := "(none)"
+	if len(t.Children) > 0 {
+		parts := make([]string, len(t.Children))
+		for i, c := range t.Children {
+			parts[i] = fmt.Sprintf("#%d", c)
+		}
+		children = strings.Join(parts, ", ")
+	}
+	logPath := filepath.Join("logs", t.ID+".log")
+	logInfo := logPath + " (no log yet)"
+	if st, err := os.Stat(filepath.Join(logDir, t.ID+".log")); err == nil {
+		logInfo = fmt.Sprintf("%s (%s)", logPath, humanBytes(st.Size()))
+	}
+	fmt.Printf("id:       %s\n", t.ID)
+	fmt.Printf("state:    %s\n", or(t.State, "(none)"))
+	fmt.Printf("title:    %s\n", or(t.Title, "(none)"))
+	fmt.Printf("repo:     %s\n", or(t.RepoURL, "(none)"))
+	fmt.Printf("issue:    %s\n", issue)
+	fmt.Printf("branch:   %s\n", or(t.Branch, "(none)"))
+	fmt.Printf("pr:       %s\n", or(t.PRURL, "(none)"))
+	fmt.Printf("created:  %s\n", created)
+	fmt.Printf("children: %s\n", children)
+	fmt.Printf("log:      %s\n", logInfo)
+	fmt.Printf("\nbody:\n%s\n", t.Body)
+	return 0
+}
+
 func cmdLogs(args []string) int {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "logs requires an id")

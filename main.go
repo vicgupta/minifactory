@@ -24,6 +24,7 @@
 //	run-once                              run the next queued task end-to-end
 //	sync                                  update pr_open tasks from GitHub PR state
 //	list [--json]                         show tasks
+//	show <id> [--json]                    show one task's full details
 //	logs <id>                             show a task's log
 //	poll                                  enqueue new `ready`-labeled GitHub issues
 //	retry <id> [--force]                  reclaim a stuck/failed task
@@ -283,6 +284,7 @@ func usage() {
   run-once                              run the next queued task end-to-end
   sync                                  update pr_open tasks from GitHub PR state
   list [--json]                         show tasks
+  show <id> [--json]                    show one task's full details
   logs <id>                             show a task's log
   poll                                  enqueue new 'ready'-labeled GitHub issues
   retry <id> [--force]                  reclaim a stuck/failed task
@@ -420,6 +422,8 @@ func main() {
 		rc = cmdSync()
 	case "list":
 		rc = cmdList(os.Args[2:])
+	case "show":
+		rc = cmdShow(os.Args[2:])
 	case "logs":
 		rc = cmdLogs(os.Args[2:])
 	case "poll":
