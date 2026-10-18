@@ -863,7 +863,13 @@ func cmdLogs(args []string) int {
 
 // cmdPoll enqueues open issues labeled `ready` from GITHUB_REPO.
 // Exits quietly when the token/repo isn't configured.
-func cmdPoll() int {
+func cmdPoll(args []string) int {
+	dryRun := false
+	for _, a := range args {
+		if a == "--dry-run" {
+			dryRun = true
+		}
+	}
 	missing := []string{}
 	if githubToken == "" {
 		missing = append(missing, "GITHUB_TOKEN")
@@ -887,6 +893,9 @@ func cmdPoll() int {
 		return 1
 	}
 	tracef("poll: GitHub returned %d open issue(s)", len(issues))
+	if dryRun {
+		return pollDryRun(issues)
+	}
 	added := 0
 	withStore(func(tasks []Task) ([]Task, error) {
 		haveNum := map[int]bool{}
@@ -925,6 +934,45 @@ func cmdPoll() int {
 		return tasks, nil
 	})
 	fmt.Printf("poll: enqueued %d new task(s)\n", added)
+	return 0
+}
+
+// pollDryRun prints what a poll would enqueue or skip for issues, reading
+// the queue file without writing it (no lock-and-rewrite, no new task IDs).
+func pollDryRun(issues []map[string]any) int {
+	var tasks []Task
+	if b, err := os.ReadFile(storePath()); err == nil && len(b) > 0 {
+		if err := json.Unmarshal(b, &tasks); err != nil {
+			fmt.Fprintln(os.Stderr, "poll:", err)
+			return 1
+		}
+	}
+	haveNum := map[int]bool{}
+	haveTitle := map[string]bool{}
+	for _, t := range tasks {
+		if t.IssueNumber != 0 {
+			haveNum[t.IssueNumber] = true
+		}
+		haveTitle[t.Title] = true
+	}
+	would := 0
+	for _, is := range issues {
+		if _, isPR := is["pull_request"]; isPR {
+			continue
+		}
+		num, _ := is["number"].(float64)
+		title, _ := is["title"].(string)
+		key := fmt.Sprintf("[#%d] %s", int(num), title)
+		if haveNum[int(num)] || haveTitle[key] {
+			fmt.Printf("poll (dry run): already queued %s\n", key)
+			continue
+		}
+		fmt.Printf("poll (dry run): would enqueue %s\n", key)
+		haveNum[int(num)] = true
+		haveTitle[key] = true
+		would++
+	}
+	fmt.Printf("poll (dry run): %d new task(s) would be enqueued; queue not modified\n", would)
 	return 0
 }
 

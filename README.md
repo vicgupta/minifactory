@@ -356,7 +356,7 @@ cd /home/minifactory   # the factory dir (or ~/.minifactory, the default when no
 ./minifactory logs <id>
 ./minifactory run-once   # normally the systemd timer does this
 ./minifactory sync
-./minifactory poll
+./minifactory poll   # --dry-run lists what would be enqueued/skipped without touching the queue
 ./minifactory retry <id> [--force] # reclaim a stuck/failed task: re-queues
                          # failed or crashed (running) tasks; retries just
                          # the PR creation for pr_open tasks with no PR URL
