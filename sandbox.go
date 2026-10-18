@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,11 +15,19 @@ import (
 // dockerBase builds the common prefix of a sandbox invocation: disposable,
 // resource-capped, FULL EGRESS (agents need package registries), workdir
 // mounted at /work. No secrets are ever passed into a container.
+// Runs as the host user (--user UID:GID) so agents never run as root —
+// Claude Code's --dangerously-skip-permissions refuses root/sudo, and
+// file ownership on the mounted workdir matches the host.
 func dockerBase(workdir string) []string {
-	return []string{"run", "--rm",
+	args := []string{"run", "--rm"}
+	if u := currentUserID(); u != "" {
+		args = append(args, "--user", u)
+	}
+	args = append(args,
 		"--cpus", "2", "--memory", "4g", "--pids-limit", "256",
-		"-v", workdir + ":/work",
-		"-w", "/work", workerImage}
+		"-v", workdir+":/work",
+		"-w", "/work", workerImage)
+	return args
 }
 
 // runAgent runs the selected agent for a task and returns the agent name.
@@ -134,19 +143,34 @@ func writeAgentStaging(tid, tokenKV, prompt string) (string, error) {
 // (agents need model API access); everything else stays out of the
 // container.
 func sandboxDockerBase(workdir, stagingDir string) []string {
-	args := []string{"run", "--rm",
+	args := []string{"run", "--rm"}
+	if u := currentUserID(); u != "" {
+		args = append(args, "--user", u)
+	}
+	args = append(args,
 		"--cpus", "2", "--memory", "4g", "--pids-limit", "256",
 		"--env-file", filepath.Join(stagingDir, "token.env"),
-		"-v", workdir + ":/work",
-		"-v", filepath.Join(stagingDir, "prompt.txt") + ":/prompt:ro",
+		"-v", workdir+":/work",
+		"-v", filepath.Join(stagingDir, "prompt.txt")+":/prompt:ro",
 		"-w", "/work",
-	}
+	)
 	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"} {
 		if _, ok := os.LookupEnv(k); ok {
 			args = append(args, "-e", k)
 		}
 	}
 	return append(args, workerImage)
+}
+
+// currentUserID returns "UID:GID" for the current user, or "" when it
+// cannot be determined (in which case the container runs as its default
+// user, typically root).
+func currentUserID() string {
+	u, err := user.Current()
+	if err != nil {
+		return ""
+	}
+	return u.Uid + ":" + u.Gid
 }
 
 // sandboxInnerCommand builds the in-container shell command for an agent.
