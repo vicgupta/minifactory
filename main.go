@@ -15,7 +15,7 @@
 //
 // Subcommands:
 //
-//	issue --repo URL --title T --body B [--issue N]
+//	issue --repo URL --title T (--body B | --body-file PATH|-) [--issue N]
 //	                                      enqueue a task (prints task id);
 //	                                      creates a GitHub issue on the repo
 //	                                      and labels it factory-ready,
@@ -276,7 +276,7 @@ func hasFlag(args []string, name string) bool {
 func usage() {
 	fmt.Fprintln(os.Stderr, `minifactory — queue -> sandbox -> PR
 
-  issue --repo URL --title T --body B [--issue N]
+  issue --repo URL --title T (--body B | --body-file PATH|-) [--issue N]
                          enqueue a task (prints task id); creates a GitHub
                          issue on the repo and labels it factory-ready,
                          unless --issue N links an existing one
