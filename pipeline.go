@@ -123,33 +123,41 @@ func gitChangedFiles(workdir string) (map[string]bool, error) {
 	return out, nil
 }
 
-// changedFilesMatch verifies the agent's claimed changed_files against the
-// files git actually sees changed in the workdir. The sets must be equal
-// after normalization; when the orchestrator's own hygiene touched
-// .gitignore, that file is excluded from the git side. Anything else — a
-// missing entry, an extra entry, a non-list claim — fails the check.
-func changedFilesMatch(workdir string, claimed any, gitignoreTouched bool) bool {
-	list, ok := claimed.([]any)
-	if !ok {
-		return false
-	}
+// changedFilesDiff compares the agent's claimed changed_files against what
+// git sees changed, returning the files the claim includes that git does not
+// (onlyClaimed) and the git-changed files the claim omits (onlyActual). Both
+// empty means the sets match. git is authoritative — the commit uses
+// `git add -A` — so this is advisory: it surfaces a sloppy or dishonest
+// handoff without failing the run.
+func changedFilesDiff(workdir string, claimed any, gitignoreTouched bool) (onlyClaimed, onlyActual []string, err error) {
 	actual, err := gitChangedFiles(workdir)
 	if err != nil {
-		return false
+		return nil, nil, err
 	}
 	if gitignoreTouched {
 		delete(actual, ".gitignore")
 	}
-	if len(list) != len(actual) {
-		return false
-	}
-	for _, f := range list {
-		s, ok := f.(string)
-		if !ok || !actual[cleanAgentPath(s)] {
-			return false
+	claimedSet := map[string]bool{}
+	if list, ok := claimed.([]any); ok {
+		for _, f := range list {
+			if s, ok := f.(string); ok {
+				claimedSet[cleanAgentPath(s)] = true
+			}
 		}
 	}
-	return true
+	for f := range claimedSet {
+		if !actual[f] {
+			onlyClaimed = append(onlyClaimed, f)
+		}
+	}
+	for f := range actual {
+		if !claimedSet[f] {
+			onlyActual = append(onlyActual, f)
+		}
+	}
+	sort.Strings(onlyClaimed)
+	sort.Strings(onlyActual)
+	return onlyClaimed, onlyActual, nil
 }
 
 func newID() string {
@@ -432,10 +440,19 @@ func runValidateStage(t *Task, rec *RunRecord, workdir string) (map[string]any, 
 		logf(tid, "validation passed: %s", firstLine(s, 160))
 	}
 
-	if !changedFilesMatch(workdir, res["changed_files"], gitignoreTouched) {
-		return nil, fmt.Errorf("changed_files does not match git status — no PR opened")
+	// Cross-check the agent's claimed changed_files against git status.
+	// git is authoritative (the commit uses `git add -A`), so a mismatch is
+	// a logged warning, not a failure: the sandbox test re-run and the human
+	// PR review are the real trust boundaries.
+	onlyClaimed, onlyActual, err := changedFilesDiff(workdir, res["changed_files"], gitignoreTouched)
+	switch {
+	case err != nil:
+		logf(tid, "WARNING: cannot list changed files: %v", err)
+	case len(onlyClaimed) == 0 && len(onlyActual) == 0:
+		logf(tid, "changed_files verified against git status")
+	default:
+		logf(tid, "WARNING: changed_files differs from git status — claimed-only=%v git-only=%v (committing git's version)", onlyClaimed, onlyActual)
 	}
-	logf(tid, "changed_files verified against git status")
 	rec.endStage(true)
 	return res, nil
 }

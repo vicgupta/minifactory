@@ -313,11 +313,11 @@ opts out of that step only).
   `--dangerously-skip-permissions`, codex
   `--dangerously-bypass-approvals-and-sandbox`) with stdin closed, so a
   permission prompt can never hang a cycle.
-- The typed handoff is verified, not trusted: `changed_files` is
-  cross-checked against `git status` (a dishonest handoff fails the task),
-  and for real-agent tasks the runner re-runs the test suite inside a
-  disposable sandbox, so generated code executes only there — never on the
-  host.
+- The typed handoff is verified, not trusted: `tests_passed` is re-verified
+  for real-agent tasks by re-running the test suite inside a disposable
+  sandbox, so generated code executes only there — never on the host.
+  `changed_files` is cross-checked against `git status` and any discrepancy
+  is logged; git is authoritative for what gets committed (`git add -A`).
 - The agent can only write its task workdir and push its own `factory/<id>`
   branch. Nothing merges without human review of the PR in GitHub.
 

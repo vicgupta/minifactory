@@ -218,7 +218,10 @@ Rules:
 2. Run the repo's test suite (e.g. `+"`python3 -m pytest -q`"+` or `+"`npm test`"+`) until it passes.
 3. Write result.json in the repo root with exactly this shape:
    {"changed_files": ["path", ...], "tests_passed": true, "summary": "one line"}
-   Set tests_passed honestly — false if anything fails.
+   changed_files must list EVERY file you changed, as a repo-root-relative
+   path (no ./ prefix, no absolute paths) exactly as `+"`git status --porcelain`"+` reports it.
+   Run `+"`git status --porcelain`"+` and copy its paths. Do NOT list result.json,
+   task.json or size.json. Set tests_passed honestly — false if anything fails.
 4. Do NOT commit, push, or open pull requests — the orchestrator handles that.
 5. Do NOT touch anything outside the working directory.
 `, t.Title, body)
