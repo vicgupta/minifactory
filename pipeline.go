@@ -768,6 +768,11 @@ func cmdSync() int {
 			logf(t.ID, "sync: PR closed unmerged -> failed")
 		} else {
 			logf(t.ID, "sync: PR still open")
+			if has, bundle, err := detectReviseTrigger(org, repo, num); err != nil {
+				logf(t.ID, "sync: revise check failed: %v", err)
+			} else if has {
+				applyRevise(t, org, repo, num, bundle)
+			}
 		}
 	}
 	if n == 0 {
@@ -783,7 +788,7 @@ type taskListEntry struct {
 	LastCostUSD   *float64 `json:"last_cost_usd,omitempty"`
 }
 
-var validStates = []string{"queued", "running", "failed", "pr_open", "split", "done"}
+var validStates = []string{"queued", "running", "failed", "pr_open", "revising", "split", "done"}
 
 // parseStateFilter parses a comma-separated --state value into a set.
 func parseStateFilter(v string) (map[string]bool, error) {
@@ -842,7 +847,11 @@ func cmdList(args []string) int {
 		return 0
 	}
 	for _, t := range tasks {
-		fmt.Printf("%s  %-8s  %.60s  %s\n", t.ID, t.State, t.Title, t.PRURL)
+		rev := ""
+		if t.Revisions > 0 || t.State == "revising" {
+			rev = fmt.Sprintf("  rev %d/%d", t.Revisions, maxRevisions)
+		}
+		fmt.Printf("%s  %-8s  %.60s  %s%s\n", t.ID, t.State, t.Title, t.PRURL, rev)
 	}
 	return 0
 }

@@ -221,3 +221,62 @@ func TestListStateFilter(t *testing.T) {
 		t.Fatalf("unknown state code %d", code)
 	}
 }
+
+func TestReviseTransitionsCapIdempotence(t *testing.T) {
+	restore := testDirs(t)
+	defer restore()
+	seedTask(t, Task{ID: "r1", State: "pr_open", Title: "x"})
+	tasks, _ := listTasks()
+	tk := &tasks[0]
+	if ok := applyRevise(tk, "o", "r", "", "fb1"); !ok || taskState(t, "r1") != "revising" {
+		t.Fatal("expected revising")
+	}
+	got, _ := listTasks()
+	if got[0].Revisions != 1 || got[0].Feedback != "fb1" {
+		t.Fatalf("bad task %+v", got[0])
+	}
+	// at cap: no new revision, notify only once
+	for i := 0; i < maxRevisions; i++ {
+		withStore(func(ts []Task) ([]Task, error) { ts[0].State = "pr_open"; return ts, nil })
+		tasks, _ = listTasks()
+		started, notify := startRevision(&tasks[0], "fb")
+		if i < maxRevisions-1 && !started {
+			t.Fatalf("round %d should start", i)
+		}
+		if i == maxRevisions-1 && (started || !notify) {
+			t.Fatalf("expected first cap hit to notify, got %v %v", started, notify)
+		}
+	}
+	tasks, _ = listTasks()
+	started, notify := startRevision(&tasks[0], "fb")
+	if started || notify || taskState(t, "r1") != "pr_open" {
+		t.Fatal("cap must be silent and idempotent after first notice")
+	}
+}
+
+func TestReviseManualAndList(t *testing.T) {
+	restore := testDirs(t)
+	defer restore()
+	seedTask(t, Task{ID: "m1", State: "pr_open", Title: "x"})
+	seedTask(t, Task{ID: "m2", State: "queued", Title: "y"})
+	if rc := cmdRevise([]string{"m2"}); rc == 0 {
+		t.Fatal("non-pr_open must fail")
+	}
+	if rc := cmdRevise([]string{"m1"}); rc != 0 || taskState(t, "m1") != "revising" {
+		t.Fatal("manual revise should move to revising")
+	}
+	if _, err := parseStateFilter("revising"); err != nil {
+		t.Fatal(err)
+	}
+	r, w, _ := os.Pipe()
+	old := os.Stdout
+	os.Stdout = w
+	cmdList(nil)
+	w.Close()
+	os.Stdout = old
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	if !strings.Contains(string(buf[:n]), "rev 1/3") {
+		t.Fatalf("list missing rev: %s", buf[:n])
+	}
+}
