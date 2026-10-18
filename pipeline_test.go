@@ -221,3 +221,24 @@ func TestListStateFilter(t *testing.T) {
 		t.Fatalf("unknown state code %d", code)
 	}
 }
+
+func TestPollDryRunLeavesQueueUntouched(t *testing.T) {
+	defer testDirs(t)()
+	seedTask(t, Task{ID: "t1", Title: "[#9] old", State: "queued", IssueNumber: 9})
+	before, err := os.ReadFile(storePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := []map[string]any{
+		{"number": float64(9), "title": "old"},
+		{"number": float64(12), "title": "new"},
+		{"number": float64(13), "title": "pr", "pull_request": map[string]any{}},
+	}
+	if rc := pollDryRun(issues); rc != 0 {
+		t.Fatalf("rc = %d", rc)
+	}
+	after, _ := os.ReadFile(storePath())
+	if string(before) != string(after) {
+		t.Fatalf("queue changed:\n%s\n---\n%s", before, after)
+	}
+}

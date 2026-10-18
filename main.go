@@ -284,7 +284,8 @@ func usage() {
   sync                                  update pr_open tasks from GitHub PR state
   list [--json] [--state S[,S...]]       show tasks
   logs <id>                             show a task's log
-  poll                                  enqueue new 'ready'-labeled GitHub issues
+  poll [--dry-run]                      enqueue new 'ready'-labeled GitHub issues
+                                        (--dry-run: print only, queue untouched)
   retry <id> [--force]                  reclaim a stuck/failed task
   report [--since Nd] [--task id] [--json]
                                         run records: aggregate stats, per-task
@@ -423,7 +424,7 @@ func main() {
 	case "logs":
 		rc = cmdLogs(os.Args[2:])
 	case "poll":
-		rc = cmdPoll()
+		rc = cmdPoll(os.Args[2:])
 	case "retry":
 		rc = cmdRetry(os.Args[2:])
 	case "report":
