@@ -27,6 +27,7 @@
 //	logs <id>                             show a task's log
 //	poll                                  enqueue new `ready`-labeled GitHub issues
 //	retry <id> [--force]                  reclaim a stuck/failed task
+//	revise <id>                           start a revision of an open PR
 //	report [--since Nd] [--task id] [--json]
 //	                                      run records: aggregate stats,
 //	                                      per-task attempts, costs, timings
@@ -286,6 +287,7 @@ func usage() {
   logs <id>                             show a task's log
   poll                                  enqueue new 'ready'-labeled GitHub issues
   retry <id> [--force]                  reclaim a stuck/failed task
+  revise <id>                           start a revision of an open PR
   report [--since Nd] [--task id] [--json]
                                         run records: aggregate stats, per-task
                                         attempts, costs and stage timings
@@ -420,6 +422,8 @@ func main() {
 		rc = cmdSync()
 	case "list":
 		rc = cmdList(os.Args[2:])
+	case "revise":
+		rc = cmdRevise(os.Args[2:])
 	case "logs":
 		rc = cmdLogs(os.Args[2:])
 	case "poll":

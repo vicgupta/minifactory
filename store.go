@@ -23,6 +23,12 @@ type Task struct {
 	// (state "split"). sync watches them and completes the parent when
 	// all are closed.
 	Children []int `json:"children,omitempty"`
+	// Revisions counts revision rounds started on this task's PR;
+	// Feedback is the pending feedback bundle for the current round;
+	// RevisionCapNotified is set once the "limit reached" comment is posted.
+	Revisions           int    `json:"revisions,omitempty"`
+	Feedback            string `json:"feedback,omitempty"`
+	RevisionCapNotified bool   `json:"revision_cap_notified,omitempty"`
 }
 
 func storePath() string { return filepath.Join(dataDir, "queue.json") }
