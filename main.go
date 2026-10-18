@@ -26,6 +26,7 @@
 //	list [--json] [--state S[,S...]]       show tasks
 //	logs <id>                             show a task's log
 //	poll                                  enqueue new `ready`-labeled GitHub issues
+//	cancel <id>                           withdraw a queued task
 //	retry <id> [--force]                  reclaim a stuck/failed task
 //	report [--since Nd] [--task id] [--json]
 //	                                      run records: aggregate stats,
@@ -285,6 +286,7 @@ func usage() {
   list [--json] [--state S[,S...]]       show tasks
   logs <id>                             show a task's log
   poll                                  enqueue new 'ready'-labeled GitHub issues
+  cancel <id>                           withdraw a queued task
   retry <id> [--force]                  reclaim a stuck/failed task
   report [--since Nd] [--task id] [--json]
                                         run records: aggregate stats, per-task
@@ -424,6 +426,8 @@ func main() {
 		rc = cmdLogs(os.Args[2:])
 	case "poll":
 		rc = cmdPoll()
+	case "cancel":
+		rc = cmdCancel(os.Args[2:])
 	case "retry":
 		rc = cmdRetry(os.Args[2:])
 	case "report":

@@ -628,6 +628,59 @@ func cmdRetry(args []string) int {
 	return 0
 }
 
+// cmdCancel withdraws a queued task so it never runs. Only queued tasks can
+// be cancelled; `retry` puts a cancelled task back in the queue.
+func cmdCancel(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "cancel requires an id")
+		return 2
+	}
+	id := args[0]
+	tasks, err := listTasks()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	var t *Task
+	for i := range tasks {
+		if tasks[i].ID == id {
+			t = &tasks[i]
+			break
+		}
+	}
+	if t == nil {
+		fmt.Fprintln(os.Stderr, "no such task: "+id)
+		return 1
+	}
+	if t.State != "queued" {
+		fmt.Fprintf(os.Stderr, "task %s is %s; only queued tasks can be cancelled\n", id, t.State)
+		return 1
+	}
+	tracef("cancel: cancelling %s", id)
+	cancelled := false
+	err = withStore(func(tasks []Task) ([]Task, error) {
+		for i := range tasks {
+			if tasks[i].ID == id && tasks[i].State == "queued" {
+				tasks[i].State = "cancelled"
+				cancelled = true
+			}
+		}
+		return tasks, nil
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if !cancelled {
+		fmt.Fprintf(os.Stderr, "task %s is no longer queued\n", id)
+		return 1
+	}
+	unlabelIssueReady(t)
+	commentOnIssue(t, "minifactory: cancelled; this task will not be run.")
+	fmt.Println("cancelled " + id)
+	return 0
+}
+
 // requeueTask resets a task to queued, clears its branch/PR bookkeeping,
 // and returns its issue to the start of the label lifecycle.
 func requeueTask(t *Task) {
@@ -766,7 +819,7 @@ type taskListEntry struct {
 	LastCostUSD   *float64 `json:"last_cost_usd,omitempty"`
 }
 
-var validStates = []string{"queued", "running", "failed", "pr_open", "split", "done"}
+var validStates = []string{"queued", "running", "failed", "pr_open", "split", "done", "cancelled"}
 
 // parseStateFilter parses a comma-separated --state value into a set.
 func parseStateFilter(v string) (map[string]bool, error) {

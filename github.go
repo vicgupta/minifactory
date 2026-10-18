@@ -409,6 +409,40 @@ func labelIssueReady(t *Task) {
 	}
 }
 
+// unlabelIssueReady removes the factory-ready label from the task's issue.
+// Best-effort: failures are logged, never fatal. Silent no-op for manual
+// issues.
+func unlabelIssueReady(t *Task) {
+	if t.IssueNumber == 0 || githubToken == "" {
+		return
+	}
+	org, repo, ok := parseGithubRepo(t.RepoURL)
+	if !ok {
+		return
+	}
+	raw, err := ghDo("GET", "/repos/"+org+"/"+repo+"/issues/"+strconv.Itoa(t.IssueNumber)+"/labels", nil)
+	if err != nil {
+		logf(t.ID, "WARNING: read issue labels failed: %v", err)
+		return
+	}
+	var cur []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &cur); err != nil {
+		logf(t.ID, "WARNING: parse issue labels failed: %v", err)
+		return
+	}
+	labels := []string{}
+	for _, l := range cur {
+		if l.Name != labelReady {
+			labels = append(labels, l.Name)
+		}
+	}
+	if err := setIssueLabels(org, repo, t.IssueNumber, labels); err != nil {
+		logf(t.ID, "WARNING: remove %s label failed: %v", labelReady, err)
+	}
+}
+
 // commentOnIssue posts a status comment on the task's GitHub issue, if the
 // task came from one. Best-effort: failures are logged, never fatal.
 // Silent no-op for manual issues.
