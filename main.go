@@ -70,9 +70,10 @@ var (
 	claudeToken   string
 	codexToken    string
 	opencodeToken string
-	agentChoice   string            // optional AGENT override: claude|codex|opencode|stub
-	maxTurns      = defaultMaxTurns // agent turn budget per task (MAX_TURNS)
-	maxCostUSD    float64           // per-task spend cap (MAX_COST_USD_PER_TASK); 0 = off
+	agentChoice   string                // optional AGENT override: claude|codex|opencode|stub
+	maxRevisions  = defaultMaxRevisions // review revision rounds per PR (MAX_REVISIONS)
+	maxTurns      = defaultMaxTurns     // agent turn budget per task (MAX_TURNS)
+	maxCostUSD    float64               // per-task spend cap (MAX_COST_USD_PER_TASK); 0 = off
 )
 
 // fileExists reports whether path exists.
@@ -395,6 +396,7 @@ func main() {
 	opencodeToken = env["OPENCODE_TOKEN"]
 	agentChoice = strings.ToLower(strings.TrimSpace(env["AGENT"]))
 	maxTurns = parseMaxTurns(env["MAX_TURNS"])
+	maxRevisions = parseMaxRevisions(env["MAX_REVISIONS"])
 	maxCostUSD = parseCostUSD(env["MAX_COST_USD_PER_TASK"])
 
 	if len(os.Args) < 2 {

@@ -17,6 +17,25 @@ const defaultMaxTurns = 30
 
 // parseMaxTurns reads the MAX_TURNS .env knob: a positive integer, otherwise
 // the default. Invalid values warn on stderr and fall back.
+// defaultMaxRevisions is the review-revision round cap when MAX_REVISIONS is
+// unset or invalid.
+const defaultMaxRevisions = 2
+
+// parseMaxRevisions reads MAX_REVISIONS: a non-negative integer (0 disables
+// revisions), otherwise the default.
+func parseMaxRevisions(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return defaultMaxRevisions
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		fmt.Fprintf(os.Stderr, "warning: invalid MAX_REVISIONS %q, using default %d\n", s, defaultMaxRevisions)
+		return defaultMaxRevisions
+	}
+	return n
+}
+
 func parseMaxTurns(s string) int {
 	s = strings.TrimSpace(s)
 	if s == "" {
