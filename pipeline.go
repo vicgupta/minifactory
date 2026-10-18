@@ -330,6 +330,7 @@ func cmdRunOnce() int {
 		return failTask(t, rec, err.Error())
 	}
 
+	recordPush(tid, workdir)
 	labelIssueCompleted(t)
 
 	tracef("run-once: creating PR from %s", branch)
@@ -490,6 +491,25 @@ func runPushStage(t *Task, rec *RunRecord, workdir, branch string) error {
 	rec.endStage(true)
 	logf(tid, "pushed branch "+branch)
 	return nil
+}
+
+// recordPush stores the workdir HEAD sha and the current time on the task.
+func recordPush(id, workdir string) {
+	rc, out := runCmd(30*time.Second, workdir, nil, "", "git", "rev-parse", "HEAD")
+	if rc != 0 {
+		return
+	}
+	sha := strings.TrimSpace(out)
+	now := float64(time.Now().Unix())
+	_ = withStore(func(tasks []Task) ([]Task, error) {
+		for i := range tasks {
+			if tasks[i].ID == id {
+				tasks[i].LastPushSHA = sha
+				tasks[i].LastPushAt = now
+			}
+		}
+		return tasks, nil
+	})
 }
 
 // splitTask decomposes an oversized task into GitHub sub-issues and marks
@@ -783,7 +803,7 @@ type taskListEntry struct {
 	LastCostUSD   *float64 `json:"last_cost_usd,omitempty"`
 }
 
-var validStates = []string{"queued", "running", "failed", "pr_open", "split", "done"}
+var validStates = []string{"queued", "running", "failed", "pr_open", stateRevising, "split", "done"}
 
 // parseStateFilter parses a comma-separated --state value into a set.
 func parseStateFilter(v string) (map[string]bool, error) {

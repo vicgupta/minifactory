@@ -23,7 +23,16 @@ type Task struct {
 	// (state "split"). sync watches them and completes the parent when
 	// all are closed.
 	Children []int `json:"children,omitempty"`
+	// Revisions counts review-feedback revision rounds already run.
+	Revisions int `json:"revisions,omitempty"`
+	// LastPushSHA / LastPushAt record the factory's most recent push to the
+	// PR branch (HEAD sha and unix time).
+	LastPushSHA string  `json:"last_push_sha,omitempty"`
+	LastPushAt  float64 `json:"last_push_at,omitempty"`
 }
+
+// stateRevising marks a task whose open PR is being revised from review feedback.
+const stateRevising = "revising"
 
 func storePath() string { return filepath.Join(dataDir, "queue.json") }
 

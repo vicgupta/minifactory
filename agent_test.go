@@ -303,3 +303,11 @@ func TestRunAgentCmdScrubsEnv(t *testing.T) {
 		t.Errorf("secret leaked into child output: %q", out)
 	}
 }
+
+func TestParseMaxRevisions(t *testing.T) {
+	for in, want := range map[string]int{"": 2, "0": 0, "5": 5, "-1": 2, "x": 2, " 3 ": 3} {
+		if got := parseMaxRevisions(in); got != want {
+			t.Errorf("parseMaxRevisions(%q) = %d, want %d", in, got, want)
+		}
+	}
+}

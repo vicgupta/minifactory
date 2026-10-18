@@ -662,7 +662,7 @@ func checkQueue() checkResult {
 		lines = append(lines, "empty — no tasks in data/queue.json")
 	} else {
 		var parts []string
-		for _, s := range []string{"queued", "running", "pr_open", "failed", "done"} {
+		for _, s := range []string{"queued", "running", "pr_open", stateRevising, "failed", "done"} {
 			if r.counts[s] > 0 {
 				parts = append(parts, fmt.Sprintf("%d %s", r.counts[s], s))
 			}
