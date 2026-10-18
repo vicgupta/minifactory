@@ -58,7 +58,7 @@ var (
 	logDir         string
 	workerImage    = "factory-worker-go" // python3.12 + git + node + pytest + /opt/stub_agent
 	sandboxTimeout = 10 * time.Minute
-	agentTimeout   = 20 * time.Minute
+	agentTimeout   = defaultAgentTimeout
 	sizerTimeout   = 8 * time.Minute
 
 	env           map[string]string
@@ -395,6 +395,7 @@ func main() {
 	opencodeToken = env["OPENCODE_TOKEN"]
 	agentChoice = strings.ToLower(strings.TrimSpace(env["AGENT"]))
 	maxTurns = parseMaxTurns(env["MAX_TURNS"])
+	agentTimeout = parseAgentTimeout(env["AGENT_TIMEOUT"])
 	maxCostUSD = parseCostUSD(env["MAX_COST_USD_PER_TASK"])
 
 	if len(os.Args) < 2 {
