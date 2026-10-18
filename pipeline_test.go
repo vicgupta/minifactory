@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -190,5 +191,33 @@ func TestRetryNoSuchTask(t *testing.T) {
 
 	if rc := cmdRetry([]string{"missing"}); rc == 0 {
 		t.Fatal("expected failure for unknown id")
+	}
+}
+
+func TestListStateFilter(t *testing.T) {
+	defer testDirs(t)()
+	seedTask(t, Task{ID: "a", State: "failed", Title: "A", CreatedAt: 1})
+	seedTask(t, Task{ID: "b", State: "pr_open", Title: "B", CreatedAt: 2})
+	seedTask(t, Task{ID: "c", State: "queued", Title: "C", CreatedAt: 3})
+	run := func(args ...string) (string, int) {
+		code := 0
+		out := captureStdout(t, func() { code = cmdList(args) })
+		return out, code
+	}
+	if out, code := run("--state", "failed"); code != 0 || !strings.Contains(out, "a ") || strings.Contains(out, "b ") || strings.Contains(out, "c ") {
+		t.Fatalf("single: %d %q", code, out)
+	}
+	if out, _ := run("--state= pr_open , failed"); !strings.Contains(out, "a ") || !strings.Contains(out, "b ") || strings.Contains(out, "c ") {
+		t.Fatalf("multi: %q", out)
+	}
+	out, _ := run("--state=queued", "--json")
+	if !strings.Contains(out, `"c"`) || strings.Contains(out, `"a"`) {
+		t.Fatalf("json: %q", out)
+	}
+	if out, _ := run("--state=done", "--json"); strings.TrimSpace(out) != "[]" {
+		t.Fatalf("empty json: %q", out)
+	}
+	if _, code := run("--state", "faild"); code != 2 {
+		t.Fatalf("unknown state code %d", code)
 	}
 }

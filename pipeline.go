@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -759,11 +760,43 @@ type taskListEntry struct {
 	LastCostUSD   *float64 `json:"last_cost_usd,omitempty"`
 }
 
+var validStates = []string{"queued", "running", "failed", "pr_open", "split", "done"}
+
+// parseStateFilter parses a comma-separated --state value into a set.
+func parseStateFilter(v string) (map[string]bool, error) {
+	set := map[string]bool{}
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if !slices.Contains(validStates, s) {
+			return nil, fmt.Errorf("unknown state %q (valid: %s)", s, strings.Join(validStates, ", "))
+		}
+		set[s] = true
+	}
+	return set, nil
+}
+
 func cmdList(args []string) int {
+	var states map[string]bool
+	if hasStateFlag(args) {
+		var err error
+		if states, err = parseStateFilter(flagVal(args, "state")); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+	}
 	tasks, err := listTasks()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
+	}
+	if states != nil {
+		kept := tasks[:0]
+		for _, t := range tasks {
+			if states[t.State] {
+				kept = append(kept, t)
+			}
+		}
+		tasks = kept
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt < tasks[j].CreatedAt })
 	if hasFlag(args, "json") {
@@ -870,4 +903,14 @@ func cmdPoll() int {
 	})
 	fmt.Printf("poll: enqueued %d new task(s)\n", added)
 	return 0
+}
+
+// hasStateFlag reports whether --state or --state=... appears in args.
+func hasStateFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--state" || strings.HasPrefix(a, "--state=") {
+			return true
+		}
+	}
+	return false
 }
