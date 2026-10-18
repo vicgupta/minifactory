@@ -221,3 +221,51 @@ func TestListStateFilter(t *testing.T) {
 		t.Fatalf("unknown state code %d", code)
 	}
 }
+
+func TestCancelQueued(t *testing.T) {
+	restore := testDirs(t)
+	defer restore()
+
+	seedTask(t, Task{ID: "c1", State: "queued", Title: "x"})
+	if rc := cmdCancel([]string{"c1"}); rc != 0 {
+		t.Fatalf("cancel queued: rc=%d", rc)
+	}
+	if got := taskState(t, "c1"); got != "cancelled" {
+		t.Fatalf("expected cancelled, got %s", got)
+	}
+	tasks, _ := listTasks()
+	if pickNextTask(tasks) != nil {
+		t.Fatal("cancelled task must not be picked")
+	}
+	if rc := cmdRetry([]string{"c1"}); rc != 0 {
+		t.Fatalf("retry cancelled: rc=%d", rc)
+	}
+	if got := taskState(t, "c1"); got != "queued" {
+		t.Fatalf("expected queued, got %s", got)
+	}
+}
+
+func TestCancelRefusesNonQueued(t *testing.T) {
+	restore := testDirs(t)
+	defer restore()
+
+	seedTask(t, Task{ID: "c2", State: "running", Title: "x"})
+	if rc := cmdCancel([]string{"c2"}); rc != 1 {
+		t.Fatalf("expected rc=1, got %d", rc)
+	}
+	if got := taskState(t, "c2"); got != "running" {
+		t.Fatalf("state must be unchanged, got %s", got)
+	}
+}
+
+func TestCancelErrors(t *testing.T) {
+	restore := testDirs(t)
+	defer restore()
+
+	if rc := cmdCancel(nil); rc != 2 {
+		t.Fatalf("missing id: rc=%d", rc)
+	}
+	if rc := cmdCancel([]string{"nope"}); rc != 1 {
+		t.Fatalf("unknown id: rc=%d", rc)
+	}
+}
