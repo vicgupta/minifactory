@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -171,6 +172,24 @@ func cmdIssue(args []string) int {
 	repo := flagVal(args, "repo")
 	title := flagVal(args, "title")
 	body := flagVal(args, "body")
+	if bf := flagVal(args, "body-file"); bf != "" {
+		if body != "" {
+			fmt.Fprintln(os.Stderr, "issue: use only one of --body and --body-file")
+			return 2
+		}
+		var data []byte
+		var err error
+		if bf == "-" {
+			data, err = io.ReadAll(os.Stdin)
+		} else {
+			data, err = os.ReadFile(bf)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "issue: cannot read --body-file %s: %v\n", bf, err)
+			return 2
+		}
+		body = string(data)
+	}
 	explicitIssue := false
 	issueNum := 0
 	if s := flagVal(args, "issue"); s != "" {

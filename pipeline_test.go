@@ -192,3 +192,42 @@ func TestRetryNoSuchTask(t *testing.T) {
 		t.Fatal("expected failure for unknown id")
 	}
 }
+
+func TestIssueBodyFile(t *testing.T) {
+	defer testDirs(t)()
+	oldTok := githubToken
+	githubToken = ""
+	defer func() { githubToken = oldTok }()
+	want := "line1 `x` $HOME\n\nline3\n"
+	f := filepath.Join(t.TempDir(), "b.md")
+	if err := os.WriteFile(f, []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if rc := cmdIssue([]string{"--repo", "o/r", "--title", "T", "--body-file", f}); rc != 0 {
+		t.Fatalf("file: rc=%d", rc)
+	}
+	// stdin
+	pr, pw, _ := os.Pipe()
+	pw.WriteString("from stdin\n")
+	pw.Close()
+	oldIn := os.Stdin
+	os.Stdin = pr
+	rc := cmdIssue([]string{"--repo", "o/r", "--title", "T2", "--body-file=-"})
+	os.Stdin = oldIn
+	if rc != 0 {
+		t.Fatalf("stdin: rc=%d", rc)
+	}
+	tasks, _ := listTasks()
+	if len(tasks) != 2 || tasks[0].Body != want || tasks[1].Body != "from stdin\n" {
+		t.Fatalf("unexpected tasks: %+v", tasks)
+	}
+	if rc := cmdIssue([]string{"--repo", "o/r", "--title", "T", "--body", "x", "--body-file", f}); rc != 2 {
+		t.Errorf("both flags: rc=%d, want 2", rc)
+	}
+	if rc := cmdIssue([]string{"--repo", "o/r", "--title", "T", "--body-file", f + ".missing"}); rc != 2 {
+		t.Errorf("missing file: rc=%d, want 2", rc)
+	}
+	if tasks, _ := listTasks(); len(tasks) != 2 {
+		t.Errorf("error cases queued tasks: %d", len(tasks))
+	}
+}
