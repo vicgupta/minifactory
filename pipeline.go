@@ -334,7 +334,16 @@ func cmdRunOnce() int {
 
 	tracef("run-once: creating PR from %s", branch)
 	rec.beginStage("pr")
-	prURL := createPR(t, branch, rec)
+	h := &handoff{Agent: ar.name}
+	h.Summary, _ = res["summary"].(string)
+	if cf, ok := res["changed_files"].([]any); ok {
+		for _, f := range cf {
+			if fs, ok := f.(string); ok {
+				h.Files = append(h.Files, fs)
+			}
+		}
+	}
+	prURL := createPR(t, branch, rec, h)
 	rec.endStage(true)
 	rec.Outcome = "pr_open"
 	rec.PRURL = prURL
@@ -667,7 +676,7 @@ func requeueTask(t *Task) {
 // retryPRCreate re-attempts PR creation for a task whose branch was pushed
 // but whose PR create failed (pr_open with no URL). No agent re-run.
 func retryPRCreate(t *Task) int {
-	prURL := createPR(t, t.Branch, nil)
+	prURL := createPR(t, t.Branch, nil, nil)
 	if prURL == "" {
 		fmt.Fprintf(os.Stderr, "retry: PR creation failed again for %s; task left pr_open (see logs/%s.log)\n", t.ID, t.ID)
 		return 1

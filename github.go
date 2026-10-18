@@ -442,10 +442,17 @@ func setTaskIssueState(t *Task, state string) {
 	}
 }
 
+// handoff is the agent's validated result.json content, shown in the PR body.
+type handoff struct {
+	Summary string
+	Agent   string
+	Files   []string
+}
+
 // createPR opens a pull request for branch. Returns the PR URL, or "" when
 // the remote isn't GitHub or no token is configured (branch is pushed anyway).
 // When the run record is flagged over budget, the PR body carries a warning.
-func createPR(t *Task, branch string, rec *RunRecord) string {
+func createPR(t *Task, branch string, rec *RunRecord, h *handoff) string {
 	org, repo, ok := parseGithubRepo(t.RepoURL)
 	if !ok || githubToken == "" {
 		logf(t.ID, "WARNING: no GitHub remote/token — branch pushed, open PR manually")
@@ -462,13 +469,7 @@ func createPR(t *Task, branch string, rec *RunRecord) string {
 	if base == "" {
 		base = "main"
 	}
-	prBody := t.Body + "\n\n---\nBuilt by minifactory. Tests passed in an isolated sandbox."
-	if rec != nil && rec.OverBudget {
-		prBody += "\n\u26a0\ufe0f Over budget: this run's reported model cost exceeded MAX_COST_USD_PER_TASK."
-	}
-	if t.IssueNumber != 0 {
-		prBody += "\nCloses #" + strconv.Itoa(t.IssueNumber) + "."
-	}
+	prBody := buildPRBody(t, rec, h)
 	pb, err := ghDo("POST", "/repos/"+org+"/"+repo+"/pulls", map[string]any{
 		"title": t.Title,
 		"head":  branch,
@@ -484,4 +485,45 @@ func createPR(t *Task, branch string, rec *RunRecord) string {
 	u, _ := pr["html_url"].(string)
 	logf(t.ID, "PR opened: %s", u)
 	return u
+}
+
+const (
+	maxHandoffSummary = 2000
+	maxHandoffFiles   = 50
+)
+
+// handoffSection renders the "Factory handoff" PR section, capped so a
+// runaway handoff can't blow up the PR body.
+func handoffSection(h *handoff) string {
+	sum := h.Summary
+	if r := []rune(sum); len(r) > maxHandoffSummary {
+		sum = string(r[:maxHandoffSummary]) + "…"
+	}
+	var sb strings.Builder
+	sb.WriteString("### Factory handoff\n**Summary:** " + sum + "\n**Agent:** " + h.Agent + "\n**Changed files (verified against git status):**\n")
+	for i, f := range h.Files {
+		if i >= maxHandoffFiles {
+			fmt.Fprintf(&sb, "- …and %d more\n", len(h.Files)-maxHandoffFiles)
+			break
+		}
+		sb.WriteString("- `" + f + "`\n")
+	}
+	return sb.String()
+}
+
+// buildPRBody assembles the PR description. A nil handoff yields the
+// plain task body plus footer.
+func buildPRBody(t *Task, rec *RunRecord, h *handoff) string {
+	body := t.Body + "\n\n---\n"
+	if h != nil {
+		body += handoffSection(h) + "\n"
+	}
+	body += "Built by minifactory. Tests passed in an isolated sandbox."
+	if rec != nil && rec.OverBudget {
+		body += "\n\u26a0\ufe0f Over budget: this run's reported model cost exceeded MAX_COST_USD_PER_TASK."
+	}
+	if t.IssueNumber != 0 {
+		body += "\nCloses #" + strconv.Itoa(t.IssueNumber) + "."
+	}
+	return body
 }

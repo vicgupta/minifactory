@@ -89,3 +89,37 @@ func TestGitCloneArgsAuthenticatesNormalizedURL(t *testing.T) {
 		t.Errorf("clone args missing auth header (token not attached): %q", joined)
 	}
 }
+
+func TestBuildPRBody(t *testing.T) {
+	task := &Task{Body: "do it", IssueNumber: 42}
+	const footer = "Built by minifactory. Tests passed in an isolated sandbox."
+
+	plain := buildPRBody(task, nil, nil)
+	if want := "do it\n\n---\n" + footer + "\nCloses #42."; plain != want {
+		t.Fatalf("no-handoff body = %q, want %q", plain, want)
+	}
+
+	h := &handoff{Summary: "line1\nline2", Agent: "claude", Files: []string{"a.go", "b_test.go"}}
+	body := buildPRBody(task, nil, h)
+	i, j, k, l := strings.Index(body, "do it"), strings.Index(body, "### Factory handoff"), strings.Index(body, footer), strings.Index(body, "Closes #42.")
+	if !(i == 0 && i < j && j < k && k < l) {
+		t.Fatalf("bad section order: %q", body)
+	}
+	for _, w := range []string{"**Summary:** line1\nline2", "**Agent:** claude", "- `a.go`\n", "- `b_test.go`\n"} {
+		if !strings.Contains(body, w) {
+			t.Errorf("body missing %q", w)
+		}
+	}
+
+	big := &handoff{Summary: strings.Repeat("x", 5000), Agent: "claude"}
+	for n := 0; n < 55; n++ {
+		big.Files = append(big.Files, "f")
+	}
+	b := buildPRBody(task, nil, big)
+	if strings.Contains(b, strings.Repeat("x", 2001)) {
+		t.Error("summary not capped")
+	}
+	if got := strings.Count(b, "- `f`"); got != 50 || !strings.Contains(b, "…and 5 more") {
+		t.Errorf("files cap wrong: %d bullets", got)
+	}
+}
