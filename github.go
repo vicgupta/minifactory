@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// githubAPIBase is the API root; tests point it at an httptest server.
+var githubAPIBase = "https://api.github.com"
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
@@ -27,7 +31,7 @@ func ghDo(method, path string, data any) ([]byte, error) {
 		}
 		body = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, "https://api.github.com"+path, body)
+	req, err := http.NewRequest(method, githubAPIBase+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +149,7 @@ const (
 	labelCreatedPR  = "factory-createdPR"
 	labelDone       = "completed"
 	labelRejected   = "factory-rejected"
+	labelRevise     = "factory-revise"
 )
 
 // labelMeta returns the color and description for a factory label.
@@ -162,12 +167,14 @@ func labelMeta(name string) (color, description string) {
 		return "1A7F37", "PR merged — work complete"
 	case labelRejected:
 		return "B60205", "PR closed without merging — work rejected"
+	case labelRevise:
+		return "D93F0B", "Reviewer requested changes — minifactory will revise the PR"
 	}
 	return "CCCCCC", ""
 }
 
 // factoryLabels lists every label in the lifecycle, in order.
-var factoryLabels = []string{labelReady, labelInProgress, labelCompleted, labelCreatedPR, labelDone, labelRejected}
+var factoryLabels = []string{labelReady, labelInProgress, labelCompleted, labelCreatedPR, labelDone, labelRejected, labelRevise}
 
 // ensureFactoryLabels creates the factory's label set on the repo when
 // missing. Creating an existing label 422s, which ensureLabel already
@@ -484,4 +491,139 @@ func createPR(t *Task, branch string, rec *RunRecord) string {
 	u, _ := pr["html_url"].(string)
 	logf(t.ID, "PR opened: %s", u)
 	return u
+}
+
+// ghUser is the user object embedded in GitHub review/comment payloads.
+type ghUser struct {
+	Login string `json:"login"`
+	Type  string `json:"type"`
+}
+
+// PRReview is a submitted pull-request review.
+type PRReview struct {
+	ID    int64  `json:"id"`
+	User  ghUser `json:"user"`
+	State string `json:"state"`
+	Body  string `json:"body"`
+}
+
+// PRReviewComment is an inline review comment on a diff.
+type PRReviewComment struct {
+	ID       int64  `json:"id"`
+	Path     string `json:"path"`
+	Line     int    `json:"line"`
+	DiffHunk string `json:"diff_hunk"`
+	Body     string `json:"body"`
+	User     ghUser `json:"user"`
+}
+
+// IssueComment is a conversation comment on an issue or PR.
+type IssueComment struct {
+	ID   int64  `json:"id"`
+	Body string `json:"body"`
+	User ghUser `json:"user"`
+}
+
+// isBotUser reports whether u is a GitHub bot account.
+func isBotUser(u ghUser) bool {
+	return u.Type == "Bot" || strings.HasSuffix(strings.ToLower(u.Login), "[bot]")
+}
+
+// isFactoryBody reports whether body is one of the factory's own comments.
+func isFactoryBody(body string) bool {
+	return strings.HasPrefix(strings.TrimSpace(body), "minifactory:")
+}
+
+func prPath(org, repo string, num int, tail string) string {
+	return "/repos/" + org + "/" + repo + "/" + tail + "/" + strconv.Itoa(num)
+}
+
+// getPRLabels returns the label names on a PR/issue.
+func getPRLabels(org, repo string, num int) ([]string, error) {
+	raw, err := ghDo("GET", prPath(org, repo, num, "issues")+"/labels?per_page=100", nil)
+	if err != nil {
+		return nil, err
+	}
+	var ls []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &ls); err != nil {
+		return nil, fmt.Errorf("parse labels: %w", err)
+	}
+	names := []string{}
+	for _, l := range ls {
+		names = append(names, l.Name)
+	}
+	return names, nil
+}
+
+// getPRReviews returns human reviews (bots and factory reviews dropped).
+func getPRReviews(org, repo string, num int) ([]PRReview, error) {
+	raw, err := ghDo("GET", prPath(org, repo, num, "pulls")+"/reviews?per_page=100", nil)
+	if err != nil {
+		return nil, err
+	}
+	var all []PRReview
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, fmt.Errorf("parse reviews: %w", err)
+	}
+	out := []PRReview{}
+	for _, r := range all {
+		if !isBotUser(r.User) && !isFactoryBody(r.Body) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// getPRReviewComments returns human inline review comments.
+func getPRReviewComments(org, repo string, num int) ([]PRReviewComment, error) {
+	raw, err := ghDo("GET", prPath(org, repo, num, "pulls")+"/comments?per_page=100", nil)
+	if err != nil {
+		return nil, err
+	}
+	var all []PRReviewComment
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, fmt.Errorf("parse review comments: %w", err)
+	}
+	out := []PRReviewComment{}
+	for _, c := range all {
+		if !isBotUser(c.User) && !isFactoryBody(c.Body) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// getIssueComments returns human issue/PR conversation comments.
+func getIssueComments(org, repo string, num int) ([]IssueComment, error) {
+	raw, err := ghDo("GET", prPath(org, repo, num, "issues")+"/comments?per_page=100", nil)
+	if err != nil {
+		return nil, err
+	}
+	var all []IssueComment
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, fmt.Errorf("parse issue comments: %w", err)
+	}
+	out := []IssueComment{}
+	for _, c := range all {
+		if !isBotUser(c.User) && !isFactoryBody(c.Body) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// postPRComment posts a conversation comment on a PR.
+func postPRComment(org, repo string, num int, body string) error {
+	return postIssueComment(org, repo, num, body)
+}
+
+// removeIssueLabel removes a label; a 404 (label not on the issue) is fine.
+func removeIssueLabel(org, repo string, num int, label string) error {
+	_, err := ghDo("DELETE", prPath(org, repo, num, "issues")+"/labels/"+url.PathEscape(label), nil)
+	if err != nil && strings.Contains(err.Error(), "-> 404") {
+		return nil
+	}
+	return err
 }
