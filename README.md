@@ -249,6 +249,9 @@ resolved `.env` path it is using. The knobs:
   be installed.
 - `MAX_TURNS` — optional. Turn budget per task for the claude runner
   (default 30). Raise for large tasks; each turn costs model usage.
+- `BASE_BRANCH` — optional. Branch to clone and open PRs against (e.g.
+  `develop`). Default: the repo's default branch. An invalid name warns and
+  falls back to the default; a branch missing on the remote fails the task.
 - `AGENT` — optional. Force which runner handles tasks:
   `claude` | `codex` | `opencode` | `stub`. The chosen runner's token must
   be set (stub needs none); otherwise the factory warns and falls back.

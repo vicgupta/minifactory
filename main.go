@@ -71,6 +71,7 @@ var (
 	codexToken    string
 	opencodeToken string
 	agentChoice   string            // optional AGENT override: claude|codex|opencode|stub
+	baseBranch    string            // optional BASE_BRANCH; "" = repo default
 	maxTurns      = defaultMaxTurns // agent turn budget per task (MAX_TURNS)
 	maxCostUSD    float64           // per-task spend cap (MAX_COST_USD_PER_TASK); 0 = off
 )
@@ -395,6 +396,7 @@ func main() {
 	opencodeToken = env["OPENCODE_TOKEN"]
 	agentChoice = strings.ToLower(strings.TrimSpace(env["AGENT"]))
 	maxTurns = parseMaxTurns(env["MAX_TURNS"])
+	baseBranch = parseBaseBranch(env["BASE_BRANCH"])
 	maxCostUSD = parseCostUSD(env["MAX_COST_USD_PER_TASK"])
 
 	if len(os.Args) < 2 {
